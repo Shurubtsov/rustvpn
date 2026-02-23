@@ -3,14 +3,14 @@ package com.rustvpn.vpn
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import androidx.activity.result.ActivityResult
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-
-private const val VPN_REQUEST_CODE = 24601
 
 @InvokeArg
 class StartVpnArgs {
@@ -20,8 +20,6 @@ class StartVpnArgs {
 
 @TauriPlugin
 class VpnPlugin(private val activity: Activity) : Plugin(activity) {
-
-    private var pendingInvoke: Invoke? = null
 
     @Command
     fun startVpn(invoke: Invoke) {
@@ -33,12 +31,20 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
         val prepareIntent = VpnService.prepare(activity)
         if (prepareIntent != null) {
-            // Need to request VPN permission
-            pendingInvoke = invoke
-            activity.startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
+            // Need to request VPN permission — use Tauri's activity result API
+            startActivityForResult(invoke, prepareIntent, "onVpnPermissionResult")
         } else {
             // Already have permission, start directly
             startService(invoke)
+        }
+    }
+
+    @ActivityCallback
+    private fun onVpnPermissionResult(invoke: Invoke, result: ActivityResult) {
+        if (result.resultCode == Activity.RESULT_OK) {
+            startService(invoke)
+        } else {
+            invoke.reject("VPN permission denied by user")
         }
     }
 
@@ -116,22 +122,6 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(result)
         } catch (e: Exception) {
             invoke.reject("Failed to query stats: ${e.message}")
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE) {
-            val invoke = pendingInvoke
-            pendingInvoke = null
-
-            if (invoke == null) return
-
-            if (resultCode == Activity.RESULT_OK) {
-                startService(invoke)
-            } else {
-                invoke.reject("VPN permission denied by user")
-            }
         }
     }
 }
