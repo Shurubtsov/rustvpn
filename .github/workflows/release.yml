@@ -202,7 +202,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-assets
-          find src-tauri/gen/android -name "*.apk" -exec cp {} release-assets/ \; 2>/dev/null || true
+          APK=$(find src-tauri/gen/android -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            cp "$APK" "release-assets/RustVPN_${{ inputs.tag }}_arm64.apk"
+          fi
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
