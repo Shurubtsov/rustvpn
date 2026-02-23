@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+.svelte-kit/
+src-tauri/target/
+
+# xray-core sidecar binaries (~35MB each, download separately)
+# Run: ./scripts/download-xray.sh
+src-tauri/binaries/
+
+# Generated
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Claude Code session files
+.claude/.edited-files
+
+# Logs
+*.log

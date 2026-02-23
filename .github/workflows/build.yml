@@ -1,0 +1,108 @@
+name: Cross-Platform Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  XRAY_VERSION: "v26.2.6"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            xray_archive: Xray-linux-64.zip
+            xray_binary: xray
+            sidecar_name: xray-x86_64-unknown-linux-gnu
+          - platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            xray_archive: Xray-windows-64.zip
+            xray_binary: xray.exe
+            sidecar_name: xray-x86_64-pc-windows-msvc.exe
+          - platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            xray_archive: Xray-macos-arm64-v8a.zip
+            xray_binary: xray
+            sidecar_name: xray-aarch64-apple-darwin
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # Linux-specific system dependencies
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # Download xray-core sidecar binary
+      - name: Download xray-core binary
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -sL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${{ matrix.xray_archive }}" -o /tmp/xray.zip
+          unzip -o /tmp/xray.zip "${{ matrix.xray_binary }}" -d /tmp/xray-extracted
+          mv "/tmp/xray-extracted/${{ matrix.xray_binary }}" "src-tauri/binaries/${{ matrix.sidecar_name }}"
+          chmod +x "src-tauri/binaries/${{ matrix.sidecar_name }}" || true
+
+      - name: Run Rust linting
+        working-directory: src-tauri
+        run: cargo clippy -- -D warnings
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Run frontend type check
+        run: pnpm check
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.rust_target }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustvpn-${{ matrix.rust_target }}
+          path: |
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*
+          if-no-files-found: warn
