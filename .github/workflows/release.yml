@@ -193,19 +193,51 @@ jobs:
           curl -fSL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-arm64" -o "$JNILIBS_DIR/libhev.so"
           chmod +x "$JNILIBS_DIR/libhev.so"
 
+      - name: Generate signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore ${{ github.workspace }}/release.keystore \
+            -alias rustvpn \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -dname "CN=RustVPN, O=RustVPN, L=Unknown, ST=Unknown, C=US"
+
       - name: Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: pnpm tauri android build --apk
 
-      - name: Collect Android artifacts
+      - name: Sign APK
         shell: bash
         run: |
-          mkdir -p release-assets
-          APK=$(find src-tauri/gen/android -name "*.apk" | head -1)
-          if [ -n "$APK" ]; then
-            cp "$APK" "release-assets/RustVPN_${{ inputs.tag }}_arm64.apk"
+          UNSIGNED=$(find src-tauri/gen/android -name "*.apk" | head -1)
+          if [ -z "$UNSIGNED" ]; then
+            echo "No APK found!"
+            exit 1
           fi
+
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          ZIPALIGN="${BUILD_TOOLS}zipalign"
+          APKSIGNER="${BUILD_TOOLS}apksigner"
+
+          # Align
+          "$ZIPALIGN" -v -p 4 "$UNSIGNED" /tmp/aligned.apk
+
+          # Sign
+          "$APKSIGNER" sign \
+            --ks ${{ github.workspace }}/release.keystore \
+            --ks-key-alias rustvpn \
+            --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+            --key-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+            --out /tmp/signed.apk \
+            /tmp/aligned.apk
+
+          # Verify
+          "$APKSIGNER" verify /tmp/signed.apk
+
+          mkdir -p release-assets
+          cp /tmp/signed.apk "release-assets/RustVPN_${{ inputs.tag }}_arm64.apk"
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
