@@ -10,7 +10,7 @@ on:
 
 env:
   XRAY_VERSION: "v26.2.6"
-  HEV_VERSION: "2.7.6"
+  HEV_VERSION: "2.14.4"
 
 jobs:
   build:
@@ -190,7 +190,7 @@ jobs:
           chmod +x "$JNILIBS_DIR/libxray.so"
 
           # Download hev-socks5-tunnel for Android ARM64
-          curl -fSL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-aarch64" -o "$JNILIBS_DIR/libhev.so"
+          curl -fSL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-arm64" -o "$JNILIBS_DIR/libhev.so"
           chmod +x "$JNILIBS_DIR/libhev.so"
 
       - name: Build Android APK

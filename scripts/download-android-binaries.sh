@@ -9,7 +9,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TARGET_DIR="$PROJECT_DIR/src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
 
 XRAY_VERSION="${XRAY_VERSION:-1.8.24}"
-HEV_VERSION="${HEV_VERSION:-2.7.6}"
+HEV_VERSION="${HEV_VERSION:-2.14.4}"
 
 echo "=== Downloading Android ARM64 binaries ==="
 echo "xray-core version: $XRAY_VERSION"
@@ -32,7 +32,7 @@ echo "xray-core downloaded and renamed to libxray.so"
 
 # Download hev-socks5-tunnel
 echo "--- Downloading hev-socks5-tunnel ---"
-HEV_URL="https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-aarch64"
+HEV_URL="https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-arm64"
 curl -fSL "$HEV_URL" -o "$TARGET_DIR/libhev.so"
 chmod +x "$TARGET_DIR/libhev.so"
 echo "hev-socks5-tunnel downloaded and renamed to libhev.so"
