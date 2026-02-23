@@ -10,8 +10,6 @@ on:
 
 env:
   XRAY_VERSION: "v26.2.6"
-
-env:
   HEV_VERSION: "2.7.6"
 
 jobs:
