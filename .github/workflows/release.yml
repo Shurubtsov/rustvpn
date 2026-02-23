@@ -11,6 +11,9 @@ on:
 env:
   XRAY_VERSION: "v26.2.6"
 
+env:
+  HEV_VERSION: "2.7.6"
+
 jobs:
   build:
     strategy:
@@ -129,8 +132,89 @@ jobs:
           path: release-assets/*
           if-no-files-found: warn
 
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Initialize Tauri Android
+        run: pnpm tauri android init
+
+      - name: Download Android binaries
+        shell: bash
+        run: |
+          JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNILIBS_DIR"
+
+          # Download xray-core for Android ARM64
+          curl -fSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip" -o /tmp/xray-android.zip
+          unzip -o /tmp/xray-android.zip xray -d /tmp/xray-android
+          mv /tmp/xray-android/xray "$JNILIBS_DIR/libxray.so"
+          chmod +x "$JNILIBS_DIR/libxray.so"
+
+          # Download hev-socks5-tunnel for Android ARM64
+          curl -fSL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-aarch64" -o "$JNILIBS_DIR/libhev.so"
+          chmod +x "$JNILIBS_DIR/libhev.so"
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: pnpm tauri android build --apk
+
+      - name: Collect Android artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find src-tauri/gen/android -name "*.apk" -exec cp {} release-assets/ \; 2>/dev/null || true
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android-arm64
+          path: release-assets/*
+          if-no-files-found: warn
+
   upload-release:
-    needs: build
+    needs: [build, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
