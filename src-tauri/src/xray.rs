@@ -12,6 +12,7 @@ use crate::config::generate_client_config;
 use crate::models::{
     AppError, ConnectionInfo, ConnectionStatus, LogEntry, ServerConfig, SpeedStats,
 };
+use crate::proxy;
 
 const DEFAULT_SOCKS_PORT: u16 = 10808;
 const MAX_LOG_ENTRIES: usize = 1000;
@@ -74,6 +75,15 @@ impl XrayManager {
             }
         }
 
+        // Kill any stale xray process from a previous run
+        {
+            let mut guard = self.child.lock().unwrap();
+            if let Some(child) = guard.take() {
+                let _ = child.kill();
+                info!("Killed stale xray process");
+            }
+        }
+
         // Reset stats counters for new connection
         self.reset_stats();
 
@@ -101,12 +111,12 @@ impl XrayManager {
         }
 
         // Create sidecar command
+        let config_path_str = config_file.to_string_lossy().to_string();
         let command = app
             .shell()
             .sidecar("xray")
             .map_err(|e| AppError::XrayProcess(format!("Failed to create sidecar command: {e}")))?
-            .args(["run", "-c"])
-            .arg(&config_file);
+            .args(["run", "-c", &config_path_str]);
 
         // Spawn the process
         let (mut rx, child_process) = command
@@ -129,9 +139,38 @@ impl XrayManager {
         let server_name = server.name.clone();
         let server_address = server.address.clone();
 
-        tauri::async_runtime::spawn(async move {
-            let mut started = false;
+        // Shared flag for timeout coordination
+        let started_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_flag_clone = started_flag.clone();
 
+        // Connection timeout: kill xray if not started within 15 seconds
+        let timeout_state = self.state.clone();
+        let timeout_child = self.child.clone();
+        let timeout_logs = self.logs.clone();
+        let timeout_app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(15));
+            if !started_flag_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut s = timeout_state.lock().unwrap();
+                if s.status == ConnectionStatus::Connecting {
+                    warn!("Connection timeout after 15 seconds");
+                    push_log_entry(&timeout_logs, "error", "Connection timeout after 15 seconds");
+                    s.status = ConnectionStatus::Error;
+                    s.error_message =
+                        Some("Connection timeout — server unreachable or config invalid".to_string());
+                    s.connected_since = None;
+                    drop(s);
+                    // Kill the xray process
+                    let child = { timeout_child.lock().unwrap().take() };
+                    if let Some(child) = child {
+                        let _ = child.kill();
+                    }
+                    let _ = timeout_app.emit("connection-status-changed", "disconnected");
+                }
+            }
+        });
+
+        tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match event {
                     CommandEvent::Stdout(line) => {
@@ -139,6 +178,30 @@ impl XrayManager {
                         let trimmed = line_str.trim();
                         info!("xray stdout: {}", trimmed);
                         push_log_entry(&logs_ref, "info", trimmed);
+
+                        // Also check stdout for "started" (xray may output to either channel)
+                        if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
+                            && trimmed.contains("started")
+                        {
+                            started_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+
+                            let mut s = state.lock().unwrap();
+                            if s.status == ConnectionStatus::Connecting {
+                                s.status = ConnectionStatus::Connected;
+                                s.connected_since = Some(now);
+                                s.server_name = Some(server_name.clone());
+                                s.server_address = Some(server_address.clone());
+                                s.error_message = None;
+                                info!("xray connected successfully (detected from stdout)");
+                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT);
+                            }
+                            drop(s);
+                            let _ = app_handle.emit("connection-status-changed", "connected");
+                        }
                     }
                     CommandEvent::Stderr(line) => {
                         let line_str = String::from_utf8_lossy(&line);
@@ -156,8 +219,10 @@ impl XrayManager {
                         push_log_entry(&logs_ref, level, trimmed);
 
                         // xray logs to stderr; detect successful startup
-                        if !started && trimmed.contains("started") {
-                            started = true;
+                        if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
+                            && trimmed.contains("started")
+                        {
+                            started_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
@@ -171,6 +236,7 @@ impl XrayManager {
                                 s.server_address = Some(server_address.clone());
                                 s.error_message = None;
                                 info!("xray connected successfully");
+                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT);
                             }
                             drop(s);
                             let _ = app_handle.emit("connection-status-changed", "connected");
@@ -191,15 +257,20 @@ impl XrayManager {
                         );
                         push_log_entry(&logs_ref, "warning", &msg);
 
+                        // Always disable system proxy when xray dies
+                        proxy::disable_system_proxy();
+
                         let mut s = state.lock().unwrap();
-                        if s.status != ConnectionStatus::Disconnecting {
+                        if s.status == ConnectionStatus::Disconnecting {
+                            s.status = ConnectionStatus::Disconnected;
+                        } else if s.status != ConnectionStatus::Disconnected
+                            && s.status != ConnectionStatus::Error
+                        {
                             s.status = ConnectionStatus::Error;
                             s.error_message = Some(format!(
                                 "xray exited unexpectedly (code: {:?})",
                                 payload.code
                             ));
-                        } else {
-                            s.status = ConnectionStatus::Disconnected;
                         }
                         s.connected_since = None;
 
@@ -220,6 +291,9 @@ impl XrayManager {
 
     pub fn stop(&self) -> Result<(), AppError> {
         self.update_status(ConnectionStatus::Disconnecting, None, None);
+
+        // Disable system proxy immediately
+        proxy::disable_system_proxy();
 
         // Kill the child process
         let child = {
@@ -344,42 +418,31 @@ impl XrayManager {
         *prev_down = 0;
     }
 
-    /// Parse xray statsquery output (protobuf text format)
+    /// Parse xray statsquery JSON output
     fn parse_stats_output(output: &str) -> (u64, u64) {
         let mut uplink: u64 = 0;
         let mut downlink: u64 = 0;
 
-        let lines: Vec<&str> = output.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.contains("outbound>>>proxy>>>traffic>>>uplink") {
-                // Look for value on next line(s)
-                for next_line in lines.iter().skip(i + 1).take(3) {
-                    if let Some(val) = Self::extract_stat_value(next_line) {
-                        uplink = val;
-                        break;
-                    }
-                }
-            } else if trimmed.contains("outbound>>>proxy>>>traffic>>>downlink") {
-                for next_line in lines.iter().skip(i + 1).take(3) {
-                    if let Some(val) = Self::extract_stat_value(next_line) {
-                        downlink = val;
-                        break;
+        // Output is JSON: {"stat": [{"name": "...", "value": N}, ...]}
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(output) {
+            if let Some(stats) = json.get("stat").and_then(|s| s.as_array()) {
+                for entry in stats {
+                    let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let value = entry
+                        .get("value")
+                        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                        .unwrap_or(0);
+
+                    if name == "outbound>>>proxy>>>traffic>>>uplink" {
+                        uplink = value;
+                    } else if name == "outbound>>>proxy>>>traffic>>>downlink" {
+                        downlink = value;
                     }
                 }
             }
         }
 
         (uplink, downlink)
-    }
-
-    fn extract_stat_value(line: &str) -> Option<u64> {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("value:") {
-            rest.trim().parse().ok()
-        } else {
-            None
-        }
     }
 
     fn update_status(

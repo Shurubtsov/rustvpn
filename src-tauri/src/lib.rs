@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod models;
+pub mod proxy;
 pub mod storage;
 #[cfg(desktop)]
 pub mod tray;

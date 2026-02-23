@@ -26,6 +26,9 @@ Thumbs.db
 .env
 .env.*
 
+# Credentials
+creds
+
 # Claude Code session files
 .claude/.edited-files
 

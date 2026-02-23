@@ -7,7 +7,7 @@ pub const STATS_API_ADDR: &str = "127.0.0.1:10085";
 pub fn generate_client_config(server: &ServerConfig, socks_port: u16) -> Result<String, AppError> {
     let config: Value = json!({
         "log": {
-            "loglevel": "warning"
+            "loglevel": "info"
         },
         "dns": {
             "servers": [
@@ -36,6 +36,16 @@ pub fn generate_client_config(server: &ServerConfig, socks_port: u16) -> Result<
                 "settings": {
                     "udp": true
                 },
+                "sniffing": {
+                    "enabled": true,
+                    "destOverride": ["http", "tls"]
+                }
+            },
+            {
+                "tag": "http-in",
+                "port": socks_port + 1,
+                "listen": "127.0.0.1",
+                "protocol": "http",
                 "sniffing": {
                     "enabled": true,
                     "destOverride": ["http", "tls"]
@@ -88,12 +98,19 @@ pub fn generate_client_config(server: &ServerConfig, socks_port: u16) -> Result<
                 {
                     "type": "field",
                     "outboundTag": "direct",
-                    "domain": ["geosite:private"]
+                    "domain": ["localhost"]
                 },
                 {
                     "type": "field",
                     "outboundTag": "direct",
-                    "ip": ["geoip:private"]
+                    "ip": [
+                        "127.0.0.0/8",
+                        "10.0.0.0/8",
+                        "172.16.0.0/12",
+                        "192.168.0.0/16",
+                        "::1/128",
+                        "fc00::/7"
+                    ]
                 }
             ]
         }
@@ -217,7 +234,12 @@ mod tests {
         let rules = config["routing"]["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0]["outboundTag"], "direct");
+        assert!(rules[0]["domain"].as_array().unwrap().contains(&Value::String("localhost".to_string())));
         assert_eq!(rules[1]["outboundTag"], "direct");
+        let ips = rules[1]["ip"].as_array().unwrap();
+        assert!(ips.contains(&Value::String("127.0.0.0/8".to_string())));
+        assert!(ips.contains(&Value::String("10.0.0.0/8".to_string())));
+        assert!(ips.contains(&Value::String("192.168.0.0/16".to_string())));
     }
 
     #[test]
