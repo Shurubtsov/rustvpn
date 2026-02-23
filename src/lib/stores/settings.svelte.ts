@@ -3,7 +3,8 @@ import type { AppSettings } from '$lib/types';
 
 const DEFAULT_SETTINGS: AppSettings = {
 	auto_connect: false,
-	last_server_id: null
+	last_server_id: null,
+	bypass_domains: ['claude.ai', 'anthropic.com', 'api.anthropic.com', 'wb.ru', 'wildberries.ru']
 };
 
 function createSettingsStore() {
@@ -29,6 +30,15 @@ function createSettingsStore() {
 		}
 	}
 
+	async function setBypassDomains(domains: string[]) {
+		settings = { ...settings, bypass_domains: domains };
+		try {
+			await updateSettings(settings);
+		} catch {
+			// Ignore save errors
+		}
+	}
+
 	return {
 		get settings() {
 			return settings;
@@ -37,7 +47,8 @@ function createSettingsStore() {
 			return loaded;
 		},
 		load,
-		setAutoConnect
+		setAutoConnect,
+		setBypassDomains
 	};
 }
 

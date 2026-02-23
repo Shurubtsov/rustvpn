@@ -2,6 +2,22 @@
 
 All notable changes to RustVPN are documented in this file.
 
+## [0.2.0] — 2026-02-23
+
+### Corporate VPN Auto-Detection
+- New `network.rs` module that parses `ip -j route show` JSON output to detect active VPN interfaces
+- Recognizes OpenVPN (`tun*`, `tap*`), WireGuard (`wg*`), PPP/L2TP (`ppp*`), NordVPN (`nordlynx*`), and Tailscale (`tailscale*`) interfaces
+- Collects routed subnets per VPN interface, skipping default/catch-all routes
+- Detects VPN server endpoint IPs from static host routes (`/32`) through physical interfaces
+- Detected subnets are automatically added to gsettings ignore-hosts (system proxy bypass)
+- Detected subnets are added to xray routing rules as direct-out IPs (defense-in-depth)
+- New `detect_vpn_interfaces` IPC command for fresh detection from the UI
+- New `DetectedVpn` type exposed to frontend: interface name, VPN type, subnets, server IP
+- Collapsible "Corporate VPNs" section in the UI showing detected interfaces and subnets
+- "Refresh" button in the UI to re-run detection on demand
+- Detection runs automatically at connect time — no manual configuration needed
+- 12 new unit tests covering route parsing, interface classification, subnet collection, and edge cases
+
 ## [0.1.0] — 2026-02-23
 
 Initial release. Full-featured desktop VPN client with VLESS+REALITY protocol support.

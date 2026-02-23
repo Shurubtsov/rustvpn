@@ -12,6 +12,7 @@ use crate::config::generate_client_config;
 use crate::models::{
     AppError, ConnectionInfo, ConnectionStatus, LogEntry, ServerConfig, SpeedStats,
 };
+use crate::network::{self, DetectedVpn};
 use crate::proxy;
 
 const DEFAULT_SOCKS_PORT: u16 = 10808;
@@ -25,6 +26,9 @@ pub struct XrayManager {
     prev_uplink: Arc<Mutex<u64>>,
     prev_downlink: Arc<Mutex<u64>>,
     logs: Arc<Mutex<VecDeque<LogEntry>>>,
+    bypass_domains: Arc<Mutex<Vec<String>>>,
+    bypass_subnets: Arc<Mutex<Vec<String>>>,
+    detected_vpns: Arc<Mutex<Vec<DetectedVpn>>>,
 }
 
 impl Default for XrayManager {
@@ -43,7 +47,15 @@ impl XrayManager {
             prev_uplink: Arc::new(Mutex::new(0)),
             prev_downlink: Arc::new(Mutex::new(0)),
             logs: Arc::new(Mutex::new(VecDeque::new())),
+            bypass_domains: Arc::new(Mutex::new(Vec::new())),
+            bypass_subnets: Arc::new(Mutex::new(Vec::new())),
+            detected_vpns: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Return the last detected VPN interfaces.
+    pub fn get_detected_vpns(&self) -> Vec<DetectedVpn> {
+        self.detected_vpns.lock().unwrap().clone()
     }
 
     pub fn status(&self) -> ConnectionInfo {
@@ -62,6 +74,7 @@ impl XrayManager {
         &self,
         app: &AppHandle<R>,
         server: &ServerConfig,
+        bypass_domains: &[String],
     ) -> Result<(), AppError> {
         // Don't start if already running
         {
@@ -90,8 +103,29 @@ impl XrayManager {
         // Update status to connecting
         self.update_status(ConnectionStatus::Connecting, Some(server), None);
 
+        // Detect corporate VPN interfaces and collect bypass subnets
+        let vpns = network::detect_vpn_routes();
+        let bypass_subnet_list = network::collect_bypass_subnets(&vpns);
+
+        // Store detected VPNs and bypass subnets
+        {
+            let mut dv = self.detected_vpns.lock().unwrap();
+            *dv = vpns;
+        }
+        {
+            let mut bs = self.bypass_subnets.lock().unwrap();
+            *bs = bypass_subnet_list.clone();
+        }
+
+        // Store bypass domains for proxy setup
+        {
+            let mut bd = self.bypass_domains.lock().unwrap();
+            *bd = bypass_domains.to_vec();
+        }
+
         // Generate xray config
-        let config_json = generate_client_config(server, DEFAULT_SOCKS_PORT)?;
+        let config_json =
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list)?;
 
         // Write config to temp file
         let config_dir = app
@@ -135,6 +169,8 @@ impl XrayManager {
         let state = self.state.clone();
         let child_ref = self.child.clone();
         let logs_ref = self.logs.clone();
+        let bypass_ref = self.bypass_domains.clone();
+        let bypass_subnets_ref = self.bypass_subnets.clone();
         let app_handle = app.clone();
         let server_name = server.name.clone();
         let server_address = server.address.clone();
@@ -197,7 +233,7 @@ impl XrayManager {
                                 s.server_address = Some(server_address.clone());
                                 s.error_message = None;
                                 info!("xray connected successfully (detected from stdout)");
-                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT);
+                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &bypass_ref.lock().unwrap(), &bypass_subnets_ref.lock().unwrap());
                             }
                             drop(s);
                             let _ = app_handle.emit("connection-status-changed", "connected");
@@ -236,7 +272,7 @@ impl XrayManager {
                                 s.server_address = Some(server_address.clone());
                                 s.error_message = None;
                                 info!("xray connected successfully");
-                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT);
+                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &bypass_ref.lock().unwrap(), &bypass_subnets_ref.lock().unwrap());
                             }
                             drop(s);
                             let _ = app_handle.emit("connection-status-changed", "connected");

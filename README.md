@@ -12,6 +12,7 @@ RustVPN mimics normal HTTPS traffic to sites like `microsoft.com`, making VPN co
 - **`vless://` URI support** — share and import server configs
 - **Real-time speed graph** — upload/download stats with 60-second history
 - **System tray** — connect/disconnect from tray, hide-to-tray on close
+- **Corporate VPN auto-detection** — detects OpenVPN/WireGuard/Tailscale interfaces, auto-bypasses their subnets
 - **Auto-connect** on startup with last used server
 - **Log viewer** — searchable xray process logs with level filtering
 - **Dark/light theme** with persistent toggle
@@ -106,10 +107,11 @@ Supported platforms:
 src-tauri/              Rust backend
   src/
     lib.rs              App builder, plugins, setup
-    commands.rs         Tauri IPC command handlers (20 commands)
+    commands.rs         Tauri IPC command handlers
     xray.rs             XrayManager — sidecar lifecycle, stats, logs
     config.rs           xray JSON config generation
     models.rs           Data types (ServerConfig, SpeedStats, etc.)
+    network.rs          Corporate VPN detection (ip route parsing)
     storage.rs          Persistence (servers.json, settings.json)
     tray.rs             System tray integration
     uri.rs              vless:// URI parsing and serialization
@@ -195,7 +197,7 @@ Each build runs clippy, tests, type checking, and produces platform-specific art
 
 - [Architecture](docs/ARCHITECTURE.md) — system design, data flow, state machine
 - [Development](docs/DEVELOPMENT.md) — prerequisites, setup, project structure
-- [API Reference](docs/API.md) — all 20 IPC commands with signatures
+- [API Reference](docs/API.md) — all IPC commands with signatures
 - [xray Config](docs/XRAY_CONFIG.md) — REALITY protocol, server setup, URI format
 
 ## License

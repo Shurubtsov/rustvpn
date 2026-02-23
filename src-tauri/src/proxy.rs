@@ -7,7 +7,7 @@ const HTTP_HOST: &str = "127.0.0.1";
 const HTTP_PORT: u16 = 10809;
 
 /// Enable system-wide proxy pointing to the local xray SOCKS5/HTTP proxy.
-pub fn enable_system_proxy(socks_port: u16) {
+pub fn enable_system_proxy(socks_port: u16, bypass_domains: &[String], bypass_subnets: &[String]) {
     info!(
         "Enabling system proxy (SOCKS5: {}:{}, HTTP: {}:{})",
         SOCKS_HOST, socks_port, HTTP_HOST, HTTP_PORT
@@ -41,12 +41,32 @@ pub fn enable_system_proxy(socks_port: u16) {
             &HTTP_PORT.to_string(),
         );
 
-        // Bypass list for local addresses
-        gsettings_set(
-            "org.gnome.system.proxy",
-            "ignore-hosts",
-            "['localhost', '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '::1']",
-        );
+        // Bypass list for local addresses + user bypass domains
+        let mut hosts = vec![
+            "'localhost'".to_string(),
+            "'127.0.0.0/8'".to_string(),
+            "'10.0.0.0/8'".to_string(),
+            "'172.16.0.0/12'".to_string(),
+            "'192.168.0.0/16'".to_string(),
+            "'::1'".to_string(),
+        ];
+        for domain in bypass_domains {
+            let d = domain.trim();
+            if !d.is_empty() {
+                // Add domain and wildcard subdomain variant
+                hosts.push(format!("'{d}'"));
+                hosts.push(format!("'*.{d}'"));
+            }
+        }
+        // Add detected VPN subnets
+        for subnet in bypass_subnets {
+            let s = subnet.trim();
+            if !s.is_empty() {
+                hosts.push(format!("'{s}'"));
+            }
+        }
+        let ignore_hosts = format!("[{}]", hosts.join(", "));
+        gsettings_set("org.gnome.system.proxy", "ignore-hosts", &ignore_hosts);
 
         info!("System proxy enabled via gsettings");
     }

@@ -24,6 +24,13 @@ export interface ServerConfig {
   reality: RealitySettings;
 }
 
+export interface DetectedVpn {
+  interface: string;    // Interface name (e.g. "tun0", "wg0")
+  vpn_type: string;     // Human-readable type (e.g. "OpenVPN", "WireGuard")
+  subnets: string[];    // Routed subnets (e.g. ["10.8.0.0/24"])
+  server_ip: string | null; // VPN server endpoint IP if detected
+}
+
 export type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -200,6 +207,29 @@ pub fn validate_config(server_config: ServerConfig) -> Result<(), String>
 **Returns:** `Promise<void>`
 
 **Error cases:** Same validation errors as `connect` (address empty, port zero, invalid UUID, empty public_key, empty short_id).
+
+---
+
+### `detect_vpn_interfaces`
+
+Runs fresh detection of corporate VPN interfaces by parsing `ip -j route show` output. Identifies VPN interfaces (tun, tap, wg, ppp, nordlynx, tailscale) and their routed subnets.
+
+**Rust signature:**
+```rust
+pub fn detect_vpn_interfaces() -> Result<Vec<DetectedVpn>, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function detectVpnInterfaces(): Promise<DetectedVpn[]>
+// invoke('detect_vpn_interfaces')
+```
+
+**Returns:** `Promise<DetectedVpn[]>` — array of detected VPN interfaces. Empty array if no VPN interfaces found or if `ip` command is unavailable.
+
+**Error cases:** None (returns empty array on failure).
+
+**Behavior:** Executes `ip -j route show`, parses the JSON output, identifies VPN interfaces by name prefix, collects their non-default routed subnets, and detects VPN server endpoint IPs from static `/32` host routes. This is also called automatically during `connect` — detected subnets are added to both gsettings ignore-hosts and xray routing rules.
 
 ---
 

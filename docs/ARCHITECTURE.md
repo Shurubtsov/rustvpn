@@ -61,6 +61,7 @@ graph TD
 | `commands.rs` | All `#[tauri::command]` handlers for connection and server CRUD |
 | `xray.rs` | `XrayManager` struct — spawns/kills xray sidecar, monitors output, tracks connection state |
 | `config.rs` | `generate_client_config()` — builds the xray JSON config from a `ServerConfig` |
+| `network.rs` | `detect_vpn_routes()` — detects corporate VPN interfaces and subnets via `ip -j route show`; `collect_bypass_subnets()` flattens results for proxy/config consumption |
 | `storage.rs` | Reads/writes `servers.json` in the OS app config directory |
 | `uri.rs` | `parse_vless_uri()` and `to_vless_uri()` — VLESS URI serialization; also exposes `parse_vless_uri_cmd` and `export_vless_uri` as Tauri commands |
 
@@ -158,6 +159,7 @@ All commands are registered in `src-tauri/src/lib.rs` via `tauri::generate_handl
 | `test_connection` | `commands::test_connection` | _(none)_ | `Result<bool, String>` |
 | `get_socks_port` | `commands::get_socks_port` | _(none)_ | `Result<u16, String>` |
 | `validate_config` | `commands::validate_config` | `server_config: ServerConfig` | `Result<(), String>` |
+| `detect_vpn_interfaces` | `commands::detect_vpn_interfaces` | _(none)_ | `Result<Vec<DetectedVpn>, String>` |
 
 ### Server CRUD Commands
 
@@ -188,6 +190,8 @@ All commands are registered in `src-tauri/src/lib.rs` via `tauri::generate_handl
 | `child` | `Arc<Mutex<Option<CommandChild>>>` | Handle to the running xray process |
 | `state` | `Arc<Mutex<ConnectionInfo>>` | Current connection status and metadata |
 | `config_path` | `Arc<Mutex<Option<PathBuf>>>` | Path to the temp xray config file for cleanup |
+| `detected_vpns` | `Arc<Mutex<Vec<DetectedVpn>>>` | Last detected corporate VPN interfaces and subnets |
+| `bypass_subnets` | `Arc<Mutex<Vec<String>>>` | Flattened bypass subnets from VPN detection |
 
 State transitions:
 

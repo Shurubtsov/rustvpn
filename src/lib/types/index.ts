@@ -46,6 +46,14 @@ export interface LogEntry {
 export interface AppSettings {
 	auto_connect: boolean;
 	last_server_id: string | null;
+	bypass_domains: string[];
+}
+
+export interface DetectedVpn {
+	interface: string;
+	vpn_type: string;
+	subnets: string[];
+	server_ip: string | null;
 }
 
 // Platform types for cross-platform UI adaptations

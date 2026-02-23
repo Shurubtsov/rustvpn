@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AppSettings, ConnectionInfo, LogEntry, ServerConfig, SpeedStats } from '$lib/types';
+import type { AppSettings, ConnectionInfo, DetectedVpn, LogEntry, ServerConfig, SpeedStats } from '$lib/types';
 
 export async function connect(config: ServerConfig): Promise<void> {
 	await invoke<void>('connect', { serverConfig: config });
@@ -72,4 +72,9 @@ export async function getSettings(): Promise<AppSettings> {
 
 export async function updateSettings(settings: AppSettings): Promise<void> {
 	await invoke<void>('update_settings', { settings });
+}
+
+// VPN detection
+export async function detectVpnInterfaces(): Promise<DetectedVpn[]> {
+	return await invoke<DetectedVpn[]>('detect_vpn_interfaces');
 }

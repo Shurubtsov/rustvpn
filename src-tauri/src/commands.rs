@@ -3,6 +3,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::models::{
     AppSettings, ConnectionInfo, ConnectionStatus, LogEntry, ServerConfig, SpeedStats,
 };
+use crate::network::{self, DetectedVpn};
 use crate::storage;
 use crate::xray::XrayManager;
 
@@ -13,12 +14,13 @@ pub fn connect<R: Runtime>(
     server_config: ServerConfig,
 ) -> Result<(), String> {
     server_config.validate()?;
+    let settings = storage::load_settings(&app).unwrap_or_default();
     manager
-        .start(&app, &server_config)
+        .start(&app, &server_config, &settings.bypass_domains)
         .map_err(|e| e.to_string())?;
 
     // Save last server id for auto-connect and tray reconnect
-    let mut settings = storage::load_settings(&app).unwrap_or_default();
+    let mut settings = settings;
     settings.last_server_id = Some(server_config.id.clone());
     let _ = storage::save_settings(&app, &settings);
 
@@ -155,6 +157,12 @@ pub fn get_settings<R: Runtime>(app: AppHandle<R>) -> Result<AppSettings, String
 #[tauri::command]
 pub fn update_settings<R: Runtime>(app: AppHandle<R>, settings: AppSettings) -> Result<(), String> {
     storage::save_settings(&app, &settings).map_err(|e| e.to_string())
+}
+
+// VPN detection
+#[tauri::command]
+pub fn detect_vpn_interfaces() -> Result<Vec<DetectedVpn>, String> {
+    Ok(network::detect_vpn_routes())
 }
 
 #[cfg(test)]

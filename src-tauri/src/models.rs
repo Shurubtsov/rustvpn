@@ -135,10 +135,28 @@ pub struct SpeedStats {
     pub total_download: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub auto_connect: bool,
     pub last_server_id: Option<String>,
+    #[serde(default)]
+    pub bypass_domains: Vec<String>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            auto_connect: false,
+            last_server_id: None,
+            bypass_domains: vec![
+                "claude.ai".to_string(),
+                "anthropic.com".to_string(),
+                "api.anthropic.com".to_string(),
+                "wb.ru".to_string(),
+                "wildberries.ru".to_string(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

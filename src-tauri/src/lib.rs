@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod models;
+pub mod network;
 pub mod proxy;
 pub mod storage;
 #[cfg(desktop)]
@@ -39,6 +40,7 @@ pub fn run() {
             commands::update_settings,
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
+            commands::detect_vpn_interfaces,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -74,7 +76,7 @@ pub fn run() {
                     if let Ok(servers) = storage::load_servers(&handle) {
                         if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
                             let manager = app.state::<XrayManager>();
-                            if let Err(e) = manager.start(&handle, server) {
+                            if let Err(e) = manager.start(&handle, server, &settings.bypass_domains) {
                                 log::warn!("Auto-connect failed: {e}");
                             }
                         }

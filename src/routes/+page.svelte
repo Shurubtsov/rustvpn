@@ -11,7 +11,8 @@
 	import ImportExportBar from '$lib/components/ImportExportBar.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import { isMobile } from '$lib/utils/platform';
-	import type { ServerConfig } from '$lib/types';
+	import { detectVpnInterfaces } from '$lib/api/tauri';
+	import type { ServerConfig, DetectedVpn } from '$lib/types';
 
 	const store = connectionStore;
 	const servers = serversStore;
@@ -24,6 +25,21 @@
 	// Form modal state
 	let showForm = $state(false);
 	let editingServer = $state<ServerConfig | null>(null);
+
+	// Detected VPNs state
+	let detectedVpns = $state<DetectedVpn[]>([]);
+	let vpnDetecting = $state(false);
+
+	async function refreshVpnDetection() {
+		vpnDetecting = true;
+		try {
+			detectedVpns = await detectVpnInterfaces();
+		} catch (e) {
+			showToast(`VPN detection failed: ${e}`, 'error');
+		} finally {
+			vpnDetecting = false;
+		}
+	}
 
 	// Toast state
 	let toast = $state<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -151,6 +167,7 @@
 		await appSettings.load();
 		store.refresh();
 		store.startPolling();
+		refreshVpnDetection();
 	});
 
 	onDestroy(() => {
@@ -211,6 +228,76 @@
 			Auto-connect
 		</label>
 	</div>
+
+	<!-- Bypass domains (split tunneling) -->
+	<details class="group">
+		<summary class="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors px-1 flex items-center gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform group-open:rotate-90">
+				<polyline points="9 18 15 12 9 6" />
+			</svg>
+			Bypass domains ({appSettings.settings.bypass_domains?.length ?? 0})
+		</summary>
+		<div class="mt-1.5 px-1">
+			<textarea
+				class="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+				rows="3"
+				placeholder="One domain per line, e.g.&#10;claude.ai&#10;anthropic.com"
+				value={appSettings.settings.bypass_domains?.join('\n') ?? ''}
+				onchange={(e) => {
+					const domains = e.currentTarget.value
+						.split('\n')
+						.map((d) => d.trim())
+						.filter((d) => d.length > 0);
+					appSettings.setBypassDomains(domains);
+				}}
+			></textarea>
+			<p class="text-[10px] text-muted-foreground/60 mt-0.5">These domains bypass the VPN tunnel (one per line). Reconnect to apply.</p>
+		</div>
+	</details>
+
+	<!-- Detected corporate VPNs -->
+	<details class="group">
+		<summary class="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors px-1 flex items-center gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform group-open:rotate-90">
+				<polyline points="9 18 15 12 9 6" />
+			</svg>
+			Corporate VPNs ({detectedVpns.length})
+		</summary>
+		<div class="mt-1.5 px-1 space-y-1.5">
+			{#if detectedVpns.length === 0}
+				<p class="text-[10px] text-muted-foreground/60">No corporate VPN interfaces detected.</p>
+			{:else}
+				{#each detectedVpns as vpn}
+					<div class="text-xs bg-muted/30 rounded-md px-2.5 py-1.5 border border-border/50">
+						<div class="flex items-center gap-1.5">
+							<span class="font-mono font-medium text-foreground">{vpn.interface}</span>
+							<span class="text-muted-foreground">({vpn.vpn_type})</span>
+						</div>
+						{#if vpn.subnets.length > 0}
+							<div class="text-[10px] text-muted-foreground/80 mt-0.5 font-mono">
+								{vpn.subnets.join(', ')}
+							</div>
+						{/if}
+						{#if vpn.server_ip}
+							<div class="text-[10px] text-muted-foreground/80 mt-0.5 font-mono">
+								Server: {vpn.server_ip}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			{/if}
+			<div class="flex items-center justify-between">
+				<p class="text-[10px] text-muted-foreground/60">Detected subnets are auto-bypassed on connect.</p>
+				<button
+					class="text-[10px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+					onclick={refreshVpnDetection}
+					disabled={vpnDetecting}
+				>
+					{vpnDetecting ? 'Detecting...' : 'Refresh'}
+				</button>
+			</div>
+		</div>
+	</details>
 
 	<!-- Divider -->
 	<div class="border-t border-border"></div>
