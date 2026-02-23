@@ -10,7 +10,7 @@
 	import ServerForm from '$lib/components/ServerForm.svelte';
 	import ImportExportBar from '$lib/components/ImportExportBar.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { isMobile } from '$lib/utils/platform';
+	import { isMobile, isDesktop } from '$lib/utils/platform';
 	import { detectVpnInterfaces } from '$lib/api/tauri';
 	import type { ServerConfig, DetectedVpn } from '$lib/types';
 
@@ -167,7 +167,9 @@
 		await appSettings.load();
 		store.refresh();
 		store.startPolling();
-		refreshVpnDetection();
+		if (isDesktop()) {
+			refreshVpnDetection();
+		}
 	});
 
 	onDestroy(() => {
@@ -255,7 +257,8 @@
 		</div>
 	</details>
 
-	<!-- Detected corporate VPNs -->
+	<!-- Detected corporate VPNs (desktop only) -->
+	{#if isDesktop()}
 	<details class="group">
 		<summary class="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors px-1 flex items-center gap-1">
 			<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform group-open:rotate-90">
@@ -298,6 +301,7 @@
 			</div>
 		</div>
 	</details>
+	{/if}
 
 	<!-- Divider -->
 	<div class="border-t border-border"></div>

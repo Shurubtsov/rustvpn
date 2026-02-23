@@ -135,6 +135,19 @@ pub struct SpeedStats {
     pub total_download: u64,
 }
 
+/// A detected VPN interface with its routed subnets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectedVpn {
+    /// Interface name (e.g. "tun0", "wg0")
+    pub interface: String,
+    /// Human-readable VPN type (e.g. "OpenVPN", "WireGuard")
+    pub vpn_type: String,
+    /// Subnets routed through this interface (e.g. ["10.8.0.0/24", "172.20.0.0/16"])
+    pub subnets: Vec<String>,
+    /// VPN server endpoint IP if detected
+    pub server_ip: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub auto_connect: bool,

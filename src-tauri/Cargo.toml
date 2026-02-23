@@ -21,7 +21,10 @@ log = "0.4"
 thiserror = "2"
 tauri = { version = "2.10.0", features = ["tray-icon"] }
 tauri-plugin-log = "2"
-tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-vpn = { path = "./tauri-plugin-vpn" }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri-plugin-shell = "2"

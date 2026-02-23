@@ -1,7 +1,9 @@
 pub mod commands;
 pub mod config;
 pub mod models;
+#[cfg(desktop)]
 pub mod network;
+#[cfg(desktop)]
 pub mod proxy;
 pub mod storage;
 #[cfg(desktop)]
@@ -15,34 +17,13 @@ use xray::XrayManager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_vpn::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(XrayManager::new())
-        .invoke_handler(tauri::generate_handler![
-            commands::connect,
-            commands::disconnect,
-            commands::get_status,
-            commands::get_connection_info,
-            commands::test_connection,
-            commands::get_socks_port,
-            commands::validate_config,
-            commands::get_servers,
-            commands::add_server,
-            commands::update_server,
-            commands::delete_server,
-            commands::export_servers,
-            commands::import_servers,
-            commands::get_speed_stats,
-            commands::get_logs,
-            commands::clear_logs,
-            commands::get_settings,
-            commands::update_settings,
-            uri::parse_vless_uri_cmd,
-            uri::export_vless_uri,
-            commands::detect_vpn_interfaces,
-        ])
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_shell::init())?;
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -50,6 +31,8 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            app.manage(XrayManager::new());
 
             let handle = app.handle().clone();
 
@@ -86,6 +69,29 @@ pub fn run() {
 
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            commands::connect,
+            commands::disconnect,
+            commands::get_status,
+            commands::get_connection_info,
+            commands::test_connection,
+            commands::get_socks_port,
+            commands::validate_config,
+            commands::get_servers,
+            commands::add_server,
+            commands::update_server,
+            commands::delete_server,
+            commands::export_servers,
+            commands::import_servers,
+            commands::get_speed_stats,
+            commands::get_logs,
+            commands::clear_logs,
+            commands::get_settings,
+            commands::update_settings,
+            uri::parse_vless_uri_cmd,
+            uri::export_vless_uri,
+            commands::detect_vpn_interfaces,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

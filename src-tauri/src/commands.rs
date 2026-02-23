@@ -1,9 +1,10 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::models::{
-    AppSettings, ConnectionInfo, ConnectionStatus, LogEntry, ServerConfig, SpeedStats,
+    AppSettings, ConnectionInfo, ConnectionStatus, DetectedVpn, LogEntry, ServerConfig, SpeedStats,
 };
-use crate::network::{self, DetectedVpn};
+#[cfg(desktop)]
+use crate::network;
 use crate::storage;
 use crate::xray::XrayManager;
 
@@ -33,7 +34,15 @@ pub fn validate_config(server_config: ServerConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn disconnect(manager: State<'_, XrayManager>) -> Result<(), String> {
+pub fn disconnect<R: Runtime>(
+    _app: AppHandle<R>,
+    manager: State<'_, XrayManager>,
+) -> Result<(), String> {
+    #[cfg(mobile)]
+    {
+        use tauri_plugin_vpn::VpnPluginExt;
+        _app.vpn().stop_vpn().map_err(|e| e.to_string())?;
+    }
     manager.stop().map_err(|e| e.to_string())
 }
 
@@ -162,7 +171,14 @@ pub fn update_settings<R: Runtime>(app: AppHandle<R>, settings: AppSettings) -> 
 // VPN detection
 #[tauri::command]
 pub fn detect_vpn_interfaces() -> Result<Vec<DetectedVpn>, String> {
-    Ok(network::detect_vpn_routes())
+    #[cfg(desktop)]
+    {
+        Ok(network::detect_vpn_routes())
+    }
+    #[cfg(mobile)]
+    {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

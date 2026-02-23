@@ -158,6 +158,46 @@ pub fn generate_client_config(
     serde_json::to_string_pretty(&config).map_err(AppError::from)
 }
 
+/// Modify xray config JSON for Android:
+/// - Add sockopt mark=255 to proxy outbound (prevents traffic loop through TUN)
+/// - Remove HTTP inbound (unnecessary with TUN)
+#[cfg(mobile)]
+pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> {
+    let mut config: serde_json::Value =
+        serde_json::from_str(config_json).map_err(AppError::from)?;
+
+    // Add sockopt to proxy outbound
+    if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+        for outbound in outbounds.iter_mut() {
+            if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
+                outbound
+                    .as_object_mut()
+                    .unwrap()
+                    .entry("streamSettings")
+                    .or_insert(serde_json::json!({}))
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(
+                        "sockopt".to_string(),
+                        serde_json::json!({ "mark": 255 }),
+                    );
+            }
+        }
+    }
+
+    // Remove HTTP inbound (keep only SOCKS)
+    if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {
+        inbounds.retain(|inbound| {
+            inbound
+                .get("protocol")
+                .and_then(|p| p.as_str())
+                != Some("http")
+        });
+    }
+
+    serde_json::to_string_pretty(&config).map_err(AppError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

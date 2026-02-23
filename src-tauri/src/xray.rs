@@ -4,21 +4,26 @@ use std::time::Duration;
 
 use log::{error, info, warn};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+#[cfg(desktop)]
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+#[cfg(desktop)]
 use tauri_plugin_shell::ShellExt;
 
 use crate::config;
 use crate::config::generate_client_config;
 use crate::models::{
-    AppError, ConnectionInfo, ConnectionStatus, LogEntry, ServerConfig, SpeedStats,
+    AppError, ConnectionInfo, ConnectionStatus, DetectedVpn, LogEntry, ServerConfig, SpeedStats,
 };
-use crate::network::{self, DetectedVpn};
+#[cfg(desktop)]
+use crate::network;
+#[cfg(desktop)]
 use crate::proxy;
 
 const DEFAULT_SOCKS_PORT: u16 = 10808;
 const MAX_LOG_ENTRIES: usize = 1000;
 
 pub struct XrayManager {
+    #[cfg(desktop)]
     child: Arc<Mutex<Option<CommandChild>>>,
     state: Arc<Mutex<ConnectionInfo>>,
     config_path: Arc<Mutex<Option<std::path::PathBuf>>>,
@@ -40,6 +45,7 @@ impl Default for XrayManager {
 impl XrayManager {
     pub fn new() -> Self {
         Self {
+            #[cfg(desktop)]
             child: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(ConnectionInfo::default())),
             config_path: Arc::new(Mutex::new(None)),
@@ -88,6 +94,32 @@ impl XrayManager {
             }
         }
 
+        // Reset stats counters for new connection
+        self.reset_stats();
+
+        // Update status to connecting
+        self.update_status(ConnectionStatus::Connecting, Some(server), None);
+
+        #[cfg(desktop)]
+        {
+            self.start_desktop(app, server, bypass_domains)?;
+        }
+
+        #[cfg(mobile)]
+        {
+            self.start_mobile(app, server, bypass_domains)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(desktop)]
+    fn start_desktop<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        server: &ServerConfig,
+        bypass_domains: &[String],
+    ) -> Result<(), AppError> {
         // Kill any stale xray process from a previous run
         {
             let mut guard = self.child.lock().unwrap();
@@ -96,12 +128,6 @@ impl XrayManager {
                 info!("Killed stale xray process");
             }
         }
-
-        // Reset stats counters for new connection
-        self.reset_stats();
-
-        // Update status to connecting
-        self.update_status(ConnectionStatus::Connecting, Some(server), None);
 
         // Detect corporate VPN interfaces and collect bypass subnets
         let vpns = network::detect_vpn_routes();
@@ -215,7 +241,6 @@ impl XrayManager {
                         info!("xray stdout: {}", trimmed);
                         push_log_entry(&logs_ref, "info", trimmed);
 
-                        // Also check stdout for "started" (xray may output to either channel)
                         if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
                             && trimmed.contains("started")
                         {
@@ -244,7 +269,6 @@ impl XrayManager {
                         let trimmed = line_str.trim();
                         info!("xray stderr: {}", trimmed);
 
-                        // Determine log level
                         let level = if trimmed.contains("[Warning]") {
                             "warning"
                         } else if trimmed.contains("[Error]") {
@@ -254,7 +278,6 @@ impl XrayManager {
                         };
                         push_log_entry(&logs_ref, level, trimmed);
 
-                        // xray logs to stderr; detect successful startup
                         if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
                             && trimmed.contains("started")
                         {
@@ -293,7 +316,6 @@ impl XrayManager {
                         );
                         push_log_entry(&logs_ref, "warning", &msg);
 
-                        // Always disable system proxy when xray dies
                         proxy::disable_system_proxy();
 
                         let mut s = state.lock().unwrap();
@@ -325,9 +347,68 @@ impl XrayManager {
         Ok(())
     }
 
+    #[cfg(mobile)]
+    fn start_mobile<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        server: &ServerConfig,
+        bypass_domains: &[String],
+    ) -> Result<(), AppError> {
+        use tauri_plugin_vpn::VpnPluginExt;
+
+        // Generate xray config (no bypass subnets on mobile)
+        let mut config_json =
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[])?;
+
+        // Apply Android-specific modifications
+        config_json = config::modify_config_for_android(&config_json)?;
+
+        // Start VPN via plugin
+        app.vpn()
+            .start_vpn(config_json, DEFAULT_SOCKS_PORT)
+            .map_err(|e| AppError::XrayProcess(format!("VPN plugin error: {e}")))?;
+
+        // Update status to connected (the actual connection happens asynchronously in the service,
+        // but we optimistically set it here; the frontend will poll for real status)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut state = self.state.lock().unwrap();
+        state.status = ConnectionStatus::Connected;
+        state.connected_since = Some(now);
+        state.server_name = Some(server.name.clone());
+        state.server_address = Some(server.address.clone());
+        state.error_message = None;
+
+        Ok(())
+    }
+
     pub fn stop(&self) -> Result<(), AppError> {
         self.update_status(ConnectionStatus::Disconnecting, None, None);
 
+        #[cfg(desktop)]
+        {
+            self.stop_desktop()?;
+        }
+
+        #[cfg(mobile)]
+        {
+            self.stop_mobile()?;
+        }
+
+        // Update status
+        self.update_status(ConnectionStatus::Disconnected, None, None);
+
+        // Reset stats counters
+        self.reset_stats();
+
+        Ok(())
+    }
+
+    #[cfg(desktop)]
+    fn stop_desktop(&self) -> Result<(), AppError> {
         // Disable system proxy immediately
         proxy::disable_system_proxy();
 
@@ -356,12 +437,14 @@ impl XrayManager {
             }
         }
 
-        // Update status
-        self.update_status(ConnectionStatus::Disconnected, None, None);
+        Ok(())
+    }
 
-        // Reset stats counters
-        self.reset_stats();
-
+    #[cfg(mobile)]
+    fn stop_mobile(&self) -> Result<(), AppError> {
+        // On mobile, we can't call the plugin here directly without an AppHandle.
+        // The stop is triggered via the command layer which calls the plugin.
+        // This method just handles state cleanup.
         Ok(())
     }
 
@@ -391,27 +474,38 @@ impl XrayManager {
             }
         }
 
-        // Run xray api statsquery via sidecar
-        let output = app
-            .shell()
-            .sidecar("xray")
-            .map_err(|e| AppError::XrayProcess(format!("Failed to create sidecar command: {e}")))?
-            .args(["api", "statsquery", "-s", config::STATS_API_ADDR])
-            .output()
-            .await
-            .map_err(|e| AppError::XrayProcess(format!("Failed to query stats: {e}")))?;
+        #[cfg(desktop)]
+        let (uplink, downlink) = {
+            // Run xray api statsquery via sidecar
+            let output = app
+                .shell()
+                .sidecar("xray")
+                .map_err(|e| AppError::XrayProcess(format!("Failed to create sidecar command: {e}")))?
+                .args(["api", "statsquery", "-s", config::STATS_API_ADDR])
+                .output()
+                .await
+                .map_err(|e| AppError::XrayProcess(format!("Failed to query stats: {e}")))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // xray may output to either stdout or stderr
-        let combined = if stdout.contains(">>>") {
-            &stdout
-        } else {
-            &stderr
+            let combined = if stdout.contains(">>>") {
+                &stdout
+            } else {
+                &stderr
+            };
+
+            Self::parse_stats_output(combined)
         };
 
-        let (uplink, downlink) = Self::parse_stats_output(combined);
+        #[cfg(mobile)]
+        let (uplink, downlink) = {
+            use tauri_plugin_vpn::VpnPluginExt;
+            let stats = app.vpn().query_stats().map_err(|e| {
+                AppError::XrayProcess(format!("Failed to query mobile stats: {e}"))
+            })?;
+            (stats.upload, stats.download)
+        };
 
         // Compute speed from delta
         let mut prev_up = self.prev_uplink.lock().unwrap();
