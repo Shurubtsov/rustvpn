@@ -42,6 +42,32 @@ where `<target-triple>` is your platform identifier, for example:
 
 Download the appropriate release from [XTLS/Xray-core releases](https://github.com/XTLS/Xray-core/releases).
 
+### Android-specific prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Android SDK | API 34 | via Android Studio or `sdkmanager` |
+| Android NDK | 27.0.12077973 | `sdkmanager "ndk;27.0.12077973"` |
+| Rust Android target | — | `rustup target add aarch64-linux-android` |
+
+### Android binaries (required at runtime)
+
+The Android build requires two native binaries placed in:
+
+```
+src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/
+├── libxray.so     # xray-core for Android ARM64
+└── libhev.so      # hev-socks5-tunnel for Android ARM64
+```
+
+Download them using the helper script:
+
+```bash
+./scripts/download-android-binaries.sh
+```
+
+A third native library (`libtunhelper.so`) is compiled automatically by the NDK/CMake build — no manual download needed.
+
 ## Clone and Run
 
 ```bash
@@ -195,11 +221,58 @@ The server list is persisted as JSON in:
 
 On Linux: `~/.config/com.rustvpn.app/servers.json`
 
+## Android Build
+
+```bash
+# One-time setup
+rustup target add aarch64-linux-android
+sdkmanager "ndk;27.0.12077973"
+pnpm tauri android init
+
+# Download native binaries
+./scripts/download-android-binaries.sh
+
+# Build debug APK
+NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973 pnpm tauri android build --apk
+```
+
+The Android build compiles:
+- Rust backend for `aarch64-linux-android`
+- Kotlin plugin code (VpnService, VpnPlugin, TunHelper)
+- C JNI library (`libtunhelper.so`) via NDK/CMake
+
+### Android plugin structure
+
+```
+src-tauri/tauri-plugin-vpn/
+├── src/                          # Rust plugin interface
+│   ├── lib.rs                    # Plugin registration
+│   ├── mobile.rs                 # Android: calls Kotlin via PluginHandle
+│   ├── desktop.rs                # Desktop: stubs (returns NotSupported)
+│   └── commands.rs               # Tauri IPC commands
+├── android/
+│   ├── build.gradle.kts          # Android library build config (CMake/NDK)
+│   └── src/main/
+│       ├── AndroidManifest.xml   # Permissions + VpnService declaration
+│       ├── java/com/rustvpn/vpn/
+│       │   ├── RustVpnService.kt # VPN lifecycle: TUN, xray, hev
+│       │   ├── VpnPlugin.kt     # Tauri plugin bridge, stats query
+│       │   └── TunHelper.kt     # JNI wrapper for native fork/exec
+│       ├── cpp/
+│       │   ├── tun_helper.c      # Native fork/exec preserving TUN FD
+│       │   └── CMakeLists.txt    # CMake config for JNI library
+│       └── jniLibs/arm64-v8a/   # Pre-built binaries (gitignored)
+│           ├── libxray.so
+│           └── libhev.so
+└── Cargo.toml
+```
+
 ## Tauri Plugins Used
 
 | Plugin | Purpose |
 |--------|---------|
-| `tauri-plugin-shell` | Spawns xray sidecar process |
+| `tauri-plugin-shell` | Spawns xray sidecar process (desktop) |
+| `tauri-plugin-vpn` | Android VPN service management (custom plugin) |
 | `tauri-plugin-dialog` | Open/save file dialogs for JSON import/export |
 | `tauri-plugin-fs` | Read/write files for JSON import/export |
 | `tauri-plugin-log` | Structured logging in debug builds |

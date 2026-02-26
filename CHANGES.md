@@ -2,6 +2,17 @@
 
 All notable changes to RustVPN are documented in this file.
 
+## [0.2.1] — 2026-02-26
+
+### Android VPN Fix
+- **Fixed 0 b/s traffic on Android** — three critical bugs prevented any traffic from flowing through the VPN:
+  1. TUN file descriptor was never passed to hev-socks5-tunnel; config used `name: tun0` (requires root) instead of `fd: N`
+  2. `Runtime.exec()` closes all non-standard FDs in child processes, so hev couldn't access the TUN FD even if configured correctly; added a JNI fork/exec helper (`libtunhelper.so`) that preserves the TUN FD across fork and clears `O_CLOEXEC` before exec
+  3. Routing loop: `addRoute("0.0.0.0", 0)` captured xray's own outbound traffic, creating an infinite loop (xray → TUN → hev → xray); `sockopt.mark=255` does not bypass Android VPN routing; fixed with `addDisallowedApplication(packageName)` to exclude the app's UID from VPN routing
+- Added missing `INTERNET` permission in AndroidManifest.xml
+- Added IPv6 routing through VPN (`addRoute("::", 0)`)
+- Added NDK/CMake native build configuration for the JNI helper library
+
 ## [0.2.0] — 2026-02-23
 
 ### Corporate VPN Auto-Detection
