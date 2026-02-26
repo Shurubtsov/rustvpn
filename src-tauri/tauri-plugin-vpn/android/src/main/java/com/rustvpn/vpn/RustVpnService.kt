@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.net.InetAddress
 
 class RustVpnService : VpnService() {
 
@@ -32,11 +33,14 @@ class RustVpnService : VpnService() {
 
         @Volatile
         var pendingSocksPort: Int = 10808
+
+        @Volatile
+        var pendingServerAddress: String? = null
     }
 
     private var tunFd: ParcelFileDescriptor? = null
     private var xrayProcess: Process? = null
-    private var tun2socksProcess: Process? = null
+    private var hevPid: Int = -1
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -57,6 +61,7 @@ class RustVpnService : VpnService() {
             val configJson = pendingConfigJson
                 ?: throw IllegalStateException("No VPN config provided")
             val socksPort = pendingSocksPort
+            val serverAddress = pendingServerAddress ?: ""
 
             // 1. Write xray config to internal storage
             val configFile = File(filesDir, "xray_config.json")
@@ -75,15 +80,28 @@ class RustVpnService : VpnService() {
             waitForPort(socksPort, timeoutMs = 10000)
             Log.i(TAG, "xray SOCKS5 port $socksPort is ready")
 
-            // 4. Create TUN interface
+            // 4. Create TUN interface with proper routing
             val builder = Builder()
                 .setSession("RustVPN")
                 .addAddress("10.0.0.2", 30)
                 .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
                 .addDnsServer("1.1.1.1")
                 .addDnsServer("8.8.8.8")
                 .setMtu(1500)
                 .setBlocking(true)
+
+            // Exclude our own app from VPN routing.
+            // This prevents a routing loop: xray's outbound traffic to the VPN server
+            // must NOT go through the TUN (which would loop back to xray via hev).
+            // Child processes (xray, hev) share our UID and are also excluded.
+            // hev reads/writes the TUN FD directly, so the exclusion doesn't affect it.
+            try {
+                builder.addDisallowedApplication(packageName)
+                Log.i(TAG, "Excluded own package from VPN routing: $packageName")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to exclude own package: ${e.message}")
+            }
 
             tunFd = builder.establish()
                 ?: throw IllegalStateException("Failed to establish TUN interface")
@@ -91,14 +109,20 @@ class RustVpnService : VpnService() {
             val fd = tunFd!!.fd
             Log.i(TAG, "TUN interface established with fd=$fd")
 
-            // 5. Start tun2socks (hev-socks5-tunnel)
+            // 5. Start tun2socks (hev-socks5-tunnel) via JNI fork/exec
+            // We use a JNI helper because Runtime.exec() closes all non-standard FDs
+            // in the child process. The JNI fork/exec preserves the TUN FD so that
+            // hev-socks5-tunnel can access it via the "fd:" config parameter.
             val hevPath = "$nativeLibDir/libhev.so"
             val hevConfigFile = File(filesDir, "hev_config.yml")
             writeHevConfig(hevConfigFile, fd, socksPort)
 
-            val hevCmd = arrayOf(hevPath, hevConfigFile.absolutePath)
-            Log.i(TAG, "Starting tun2socks: ${hevCmd.joinToString(" ")}")
-            tun2socksProcess = Runtime.getRuntime().exec(hevCmd)
+            Log.i(TAG, "Starting tun2socks via JNI fork: $hevPath (tunFd=$fd)")
+            hevPid = TunHelper.nativeStartWithTunFd(hevPath, hevConfigFile.absolutePath, fd)
+            if (hevPid <= 0) {
+                throw IllegalStateException("Failed to start tun2socks (JNI fork returned $hevPid)")
+            }
+            Log.i(TAG, "tun2socks started with PID=$hevPid")
 
             isRunning = true
             Log.i(TAG, "VPN started successfully")
@@ -122,11 +146,15 @@ class RustVpnService : VpnService() {
     }
 
     private fun cleanup() {
-        try {
-            tun2socksProcess?.destroy()
-            tun2socksProcess = null
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping tun2socks", e)
+        // Stop hev-socks5-tunnel via native kill
+        if (hevPid > 0) {
+            try {
+                Log.i(TAG, "Killing tun2socks PID=$hevPid")
+                TunHelper.nativeKillProcess(hevPid)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping tun2socks", e)
+            }
+            hevPid = -1
         }
         try {
             xrayProcess?.destroy()
@@ -167,11 +195,12 @@ class RustVpnService : VpnService() {
     }
 
     private fun writeHevConfig(file: File, tunFd: Int, socksPort: Int) {
+        // Use "fd:" instead of "name:" so hev uses the inherited TUN file descriptor
+        // directly rather than trying to open a TUN device by name (which requires root).
         val config = """
             tunnel:
-              name: tun0
+              fd: $tunFd
               mtu: 1500
-              multi-queue: false
               ipv4: 10.0.0.2
 
             socks5:

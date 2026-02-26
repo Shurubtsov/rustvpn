@@ -6,10 +6,27 @@ plugins {
 android {
     namespace = "com.rustvpn.vpn"
     compileSdk = 34
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         minSdk = 24
         targetSdk = 34
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments("-DANDROID_STL=none")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
     }
 
     buildTypes {

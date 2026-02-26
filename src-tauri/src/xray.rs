@@ -365,7 +365,7 @@ impl XrayManager {
 
         // Start VPN via plugin
         app.vpn()
-            .start_vpn(config_json, DEFAULT_SOCKS_PORT)
+            .start_vpn(config_json, DEFAULT_SOCKS_PORT, server.address.clone())
             .map_err(|e| AppError::XrayProcess(format!("VPN plugin error: {e}")))?;
 
         // Update status to connected (the actual connection happens asynchronously in the service,

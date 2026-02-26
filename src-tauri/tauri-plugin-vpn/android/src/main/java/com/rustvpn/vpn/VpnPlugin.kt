@@ -16,6 +16,7 @@ import app.tauri.plugin.Plugin
 class StartVpnArgs {
     lateinit var configJson: String
     var socksPort: Int = 10808
+    var serverAddress: String = ""
 }
 
 @TauriPlugin
@@ -28,6 +29,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         // Store config for the service to pick up
         RustVpnService.pendingConfigJson = args.configJson
         RustVpnService.pendingSocksPort = args.socksPort
+        RustVpnService.pendingServerAddress = args.serverAddress
 
         val prepareIntent = VpnService.prepare(activity)
         if (prepareIntent != null) {

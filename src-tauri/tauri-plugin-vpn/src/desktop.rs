@@ -11,7 +11,12 @@ impl<R: tauri::Runtime> VpnPlugin<R> {
         }
     }
 
-    pub fn start_vpn(&self, _config_json: String, _socks_port: u16) -> Result<(), crate::Error> {
+    pub fn start_vpn(
+        &self,
+        _config_json: String,
+        _socks_port: u16,
+        _server_address: String,
+    ) -> Result<(), crate::Error> {
         Err(crate::Error::NotSupported)
     }
 

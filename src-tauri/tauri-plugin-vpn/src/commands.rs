@@ -20,9 +20,10 @@ pub(crate) async fn start_vpn<R: Runtime>(
     app: AppHandle<R>,
     config_json: String,
     socks_port: u16,
+    server_address: Option<String>,
 ) -> Result<(), String> {
     app.vpn()
-        .start_vpn(config_json, socks_port)
+        .start_vpn(config_json, socks_port, server_address.unwrap_or_default())
         .map_err(|e| e.to_string())
 }
 

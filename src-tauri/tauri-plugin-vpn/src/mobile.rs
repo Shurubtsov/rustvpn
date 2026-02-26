@@ -22,13 +22,19 @@ impl<R: Runtime> VpnPlugin<R> {
         Ok(Self { handle })
     }
 
-    pub fn start_vpn(&self, config_json: String, socks_port: u16) -> Result<(), crate::Error> {
+    pub fn start_vpn(
+        &self,
+        config_json: String,
+        socks_port: u16,
+        server_address: String,
+    ) -> Result<(), crate::Error> {
         self.handle
             .run_mobile_plugin::<serde_json::Value>(
                 "startVpn",
                 serde_json::json!({
                     "configJson": config_json,
                     "socksPort": socks_port,
+                    "serverAddress": server_address,
                 }),
             )
             .map_err(|e| crate::Error::PluginInvoke(e.to_string()))?;
