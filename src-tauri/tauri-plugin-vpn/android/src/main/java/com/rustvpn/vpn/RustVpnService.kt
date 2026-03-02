@@ -50,7 +50,13 @@ class RustVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startVpn()
+            ACTION_START -> {
+                // Must start foreground immediately on the main thread (Android requires this
+                // within 5 seconds of startForegroundService), then do heavy work in background.
+                createNotificationChannel()
+                startForeground(NOTIFICATION_ID, buildNotification())
+                Thread { startVpn() }.start()
+            }
             ACTION_STOP -> stopVpn()
         }
         return START_STICKY
@@ -63,9 +69,6 @@ class RustVpnService : VpnService() {
             xrayRunning = false
             hevRunning = false
             tunActive = false
-
-            createNotificationChannel()
-            startForeground(NOTIFICATION_ID, buildNotification())
 
             val configJson = pendingConfigJson
                 ?: throw IllegalStateException("No VPN config provided")
