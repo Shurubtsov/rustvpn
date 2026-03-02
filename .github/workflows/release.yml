@@ -196,26 +196,25 @@ jobs:
           mkdir -p "$JNILIBS_DIR"
 
           # The pre-built GitHub release is a Linux/glibc binary that cannot run on Android.
-          # Build from source with NDK to get a proper Android shared library.
+          # Build from source using ndk-build with the project's Android.mk which sets
+          # FD_SET_DEFINED/SOCKLEN_T_DEFINED to avoid lwip vs bionic typedef conflicts.
           export NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
 
-          git clone --depth 1 --branch "${HEV_VERSION}" \
-            https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-socks5-tunnel
-          cd /tmp/hev-socks5-tunnel
-          git submodule update --init --recursive
+          # ndk-build expects the source in a 'jni' subdirectory
+          mkdir -p /tmp/hev-build
+          git clone --depth 1 --branch "${HEV_VERSION}" --recursive \
+            https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-build/jni
 
-          make \
-            CC="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" \
-            STRIP="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
-            -j$(nproc) \
-            shared
+          cd /tmp/hev-build
+          "${NDK_HOME}/ndk-build" APP_ABI=arm64-v8a -j$(nproc)
 
-          if [ ! -f bin/libhev-socks5-tunnel.so ]; then
-            echo "ERROR: shared library build failed"
+          HEV_SO="/tmp/hev-build/libs/arm64-v8a/libhev-socks5-tunnel.so"
+          if [ ! -f "$HEV_SO" ]; then
+            echo "ERROR: ndk-build failed — libhev-socks5-tunnel.so not found"
             exit 1
           fi
 
-          cp bin/libhev-socks5-tunnel.so "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          cp "$HEV_SO" "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
           chmod +x "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
           cd "${GITHUB_WORKSPACE}"
 

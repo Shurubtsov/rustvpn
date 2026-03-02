@@ -32,9 +32,10 @@ chmod +x "$TARGET_DIR/libxray.so"
 rm -rf "$XRAY_TMP"
 echo "xray-core downloaded and renamed to libxray.so"
 
-# Build hev-socks5-tunnel from source using NDK
+# Build hev-socks5-tunnel from source using ndk-build
 # The pre-built GitHub release is a Linux/glibc binary that cannot run on Android (bionic libc).
-# We must compile from source to get a proper Android shared library.
+# We use the project's own Android.mk which sets FD_SET_DEFINED and SOCKLEN_T_DEFINED
+# to avoid typedef conflicts between lwip and Android's bionic headers.
 echo "--- Building hev-socks5-tunnel from source ---"
 
 # Find NDK
@@ -52,26 +53,24 @@ fi
 echo "Using NDK: $NDK"
 
 HEV_TMP=$(mktemp -d)
-git clone --depth 1 --branch "$HEV_VERSION" \
-    https://github.com/heiher/hev-socks5-tunnel.git "$HEV_TMP/hev-socks5-tunnel"
 
-cd "$HEV_TMP/hev-socks5-tunnel"
-git submodule update --init --recursive
+# ndk-build expects the source in a 'jni' subdirectory
+mkdir -p "$HEV_TMP/hev-build"
+git clone --depth 1 --branch "$HEV_VERSION" --recursive \
+    https://github.com/heiher/hev-socks5-tunnel.git "$HEV_TMP/hev-build/jni"
 
-# Build as shared library using the project's Makefile with NDK cross-compilation
-# hev-socks5-tunnel supports building as a shared library with ENABLE_SHARED=1
-make \
-    CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" \
-    STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
-    -j"$(nproc)" \
-    shared
+cd "$HEV_TMP/hev-build"
+"$NDK/ndk-build" APP_ABI=arm64-v8a -j"$(nproc)"
 
-if [ ! -f bin/libhev-socks5-tunnel.so ]; then
-    echo "ERROR: shared library build failed — bin/libhev-socks5-tunnel.so not found"
+# ndk-build outputs to libs/<ABI>/libhev-socks5-tunnel.so
+HEV_SO="$HEV_TMP/hev-build/libs/arm64-v8a/libhev-socks5-tunnel.so"
+if [ ! -f "$HEV_SO" ]; then
+    echo "ERROR: ndk-build failed — $HEV_SO not found"
+    ls -la "$HEV_TMP/hev-build/libs/" 2>/dev/null || true
     exit 1
 fi
 
-cp bin/libhev-socks5-tunnel.so "$TARGET_DIR/libhev.so"
+cp "$HEV_SO" "$TARGET_DIR/libhev.so"
 chmod +x "$TARGET_DIR/libhev.so"
 
 cd "$PROJECT_DIR"
