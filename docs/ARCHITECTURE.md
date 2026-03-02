@@ -62,7 +62,7 @@ User Apps
     ↓ (raw IP packets via file descriptor)
 ┌──────────────────────────────┐
 │  hev-socks5-tunnel (libhev)  │  ← reads TUN FD, converts to SOCKS5
-│  Launched via JNI fork/exec  │
+│  Loaded via JNI dlopen       │
 └──────────────────────────────┘
     ↓ (SOCKS5 TCP/UDP → 127.0.0.1:10808)
 ┌──────────────────────────────┐
@@ -81,14 +81,14 @@ User Apps
 |------|---------------|
 | `tauri-plugin-vpn/android/.../RustVpnService.kt` | Android `VpnService` — creates TUN, launches xray and hev, manages lifecycle |
 | `tauri-plugin-vpn/android/.../VpnPlugin.kt` | Tauri plugin bridge — handles VPN permission, starts/stops service, queries stats |
-| `tauri-plugin-vpn/android/.../TunHelper.kt` | Kotlin JNI wrapper for the native fork/exec helper |
-| `tauri-plugin-vpn/android/.../cpp/tun_helper.c` | C JNI library — forks and execs hev with TUN FD preserved |
+| `tauri-plugin-vpn/android/.../HevTunnel.kt` | Kotlin JNI wrapper — loads libhev.so via dlopen, runs tunnel in pthread |
+| `tauri-plugin-vpn/android/.../cpp/hev_jni.c` | C JNI library — dlopen/dlsym wrapper for hev-socks5-tunnel shared library |
 | `tauri-plugin-vpn/src/mobile.rs` | Rust plugin interface for Android (calls Kotlin via Tauri mobile plugin API) |
 | `src-tauri/src/config.rs` | `modify_config_for_android()` — adds `sockopt.mark`, removes HTTP inbound |
 
-### Why JNI Fork/Exec?
+### Why JNI dlopen (not fork/exec)?
 
-Android's `Runtime.exec()` closes **all non-standard file descriptors** (> 2) in the child process before calling `exec()`. The TUN file descriptor from `VpnService.Builder.establish()` would be lost. The JNI helper (`libtunhelper.so`) uses native `fork()`/`exec()` directly, preserving the TUN FD and clearing `O_CLOEXEC` so hev-socks5-tunnel can access it via the `fd:` config parameter.
+The pre-built `hev-socks5-tunnel` binary from GitHub releases is a Linux/glibc executable that **cannot run on Android** (which uses bionic libc). The previous fork/exec approach silently failed with exit code 127. Instead, hev-socks5-tunnel is compiled from source using NDK to produce an Android shared library (`libhev.so`). The JNI wrapper (`libhevjni.so`) loads it at runtime via `dlopen()`, resolves the `hev_socks5_tunnel_main_from_file` and `hev_socks5_tunnel_quit` symbols, and runs the tunnel in a pthread. The TUN file descriptor is passed via the hev YAML config `fd:` parameter.
 
 ### Routing Loop Prevention
 
@@ -99,10 +99,10 @@ Android's `Runtime.exec()` closes **all non-standard file descriptors** (> 2) in
 | Binary | Config name | Source | Purpose |
 |--------|-----------|--------|---------|
 | `libxray.so` | xray-core | [XTLS/Xray-core releases](https://github.com/XTLS/Xray-core/releases) | VLESS+REALITY proxy engine |
-| `libhev.so` | hev-socks5-tunnel | [heiher/hev-socks5-tunnel releases](https://github.com/heiher/hev-socks5-tunnel/releases) | TUN → SOCKS5 packet converter |
-| `libtunhelper.so` | — | Compiled from `cpp/tun_helper.c` via NDK/CMake | JNI fork/exec helper for FD passing |
+| `libhev.so` | hev-socks5-tunnel | Built from source via NDK ([heiher/hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)) | TUN → SOCKS5 packet converter |
+| `libhevjni.so` | — | Compiled from `cpp/hev_jni.c` via NDK/CMake | JNI dlopen wrapper for libhev.so |
 
-Binaries are placed in `tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/` (xray, hev) and compiled automatically (tunhelper).
+Binaries are placed in `tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/` (xray, hev) and compiled automatically (hevjni).
 
 ## Module Structure
 

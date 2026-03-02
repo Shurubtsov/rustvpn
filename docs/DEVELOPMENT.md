@@ -66,7 +66,7 @@ Download them using the helper script:
 ./scripts/download-android-binaries.sh
 ```
 
-A third native library (`libtunhelper.so`) is compiled automatically by the NDK/CMake build — no manual download needed.
+A JNI wrapper library (`libhevjni.so`) is compiled automatically by the NDK/CMake build — no manual download needed.
 
 ## Clone and Run
 
@@ -238,8 +238,8 @@ NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973 pnpm tauri android build --apk
 
 The Android build compiles:
 - Rust backend for `aarch64-linux-android`
-- Kotlin plugin code (VpnService, VpnPlugin, TunHelper)
-- C JNI library (`libtunhelper.so`) via NDK/CMake
+- Kotlin plugin code (VpnService, VpnPlugin, HevTunnel)
+- C JNI library (`libhevjni.so`) via NDK/CMake
 
 ### Android plugin structure
 
@@ -257,9 +257,9 @@ src-tauri/tauri-plugin-vpn/
 │       ├── java/com/rustvpn/vpn/
 │       │   ├── RustVpnService.kt # VPN lifecycle: TUN, xray, hev
 │       │   ├── VpnPlugin.kt     # Tauri plugin bridge, stats query
-│       │   └── TunHelper.kt     # JNI wrapper for native fork/exec
+│       │   └── HevTunnel.kt     # JNI wrapper — loads libhev.so via dlopen
 │       ├── cpp/
-│       │   ├── tun_helper.c      # Native fork/exec preserving TUN FD
+│       │   ├── hev_jni.c         # JNI dlopen wrapper for hev-socks5-tunnel
 │       │   └── CMakeLists.txt    # CMake config for JNI library
 │       └── jniLibs/arm64-v8a/   # Pre-built binaries (gitignored)
 │           ├── libxray.so

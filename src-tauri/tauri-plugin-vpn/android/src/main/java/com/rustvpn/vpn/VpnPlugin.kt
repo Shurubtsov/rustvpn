@@ -77,9 +77,15 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun getVpnStatus(invoke: Invoke) {
+        // Also check live hev state in case the thread died
+        val hevLive = try { HevTunnel.nativeIsRunning() } catch (_: Exception) { false }
+
         val result = JSObject().apply {
             put("is_running", RustVpnService.isRunning)
             put("last_error", RustVpnService.lastError)
+            put("xray_running", RustVpnService.xrayRunning)
+            put("hev_running", hevLive)
+            put("tun_active", RustVpnService.tunActive)
         }
         invoke.resolve(result)
     }

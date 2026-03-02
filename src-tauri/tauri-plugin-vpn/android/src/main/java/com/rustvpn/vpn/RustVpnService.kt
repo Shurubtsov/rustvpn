@@ -6,12 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
-import java.net.InetAddress
 
 class RustVpnService : VpnService() {
 
@@ -36,11 +34,19 @@ class RustVpnService : VpnService() {
 
         @Volatile
         var pendingServerAddress: String? = null
+
+        @Volatile
+        var xrayRunning = false
+
+        @Volatile
+        var hevRunning = false
+
+        @Volatile
+        var tunActive = false
     }
 
     private var tunFd: ParcelFileDescriptor? = null
     private var xrayProcess: Process? = null
-    private var hevPid: Int = -1
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -54,6 +60,9 @@ class RustVpnService : VpnService() {
         try {
             lastError = null
             isRunning = false
+            xrayRunning = false
+            hevRunning = false
+            tunActive = false
 
             createNotificationChannel()
             startForeground(NOTIFICATION_ID, buildNotification())
@@ -61,26 +70,54 @@ class RustVpnService : VpnService() {
             val configJson = pendingConfigJson
                 ?: throw IllegalStateException("No VPN config provided")
             val socksPort = pendingSocksPort
-            val serverAddress = pendingServerAddress ?: ""
+
+            val nativeLibDir = applicationInfo.nativeLibraryDir
+
+            // Verify required binaries exist
+            val xrayPath = "$nativeLibDir/libxray.so"
+            val hevLibPath = "$nativeLibDir/libhev.so"
+
+            if (!File(xrayPath).exists()) {
+                throw IllegalStateException("xray binary not found at $xrayPath")
+            }
+            if (!File(hevLibPath).exists()) {
+                throw IllegalStateException("hev library not found at $hevLibPath")
+            }
+            Log.i(TAG, "Verified binaries: xray=$xrayPath, hev=$hevLibPath")
 
             // 1. Write xray config to internal storage
             val configFile = File(filesDir, "xray_config.json")
             FileOutputStream(configFile).use { it.write(configJson.toByteArray()) }
             Log.i(TAG, "Wrote xray config to ${configFile.absolutePath}")
 
-            val nativeLibDir = applicationInfo.nativeLibraryDir
-
-            // 2. Start xray
-            val xrayPath = "$nativeLibDir/libxray.so"
+            // 2. Start xray, capturing stdout/stderr for error reporting
             val xrayCmd = arrayOf(xrayPath, "run", "-c", configFile.absolutePath)
             Log.i(TAG, "Starting xray: ${xrayCmd.joinToString(" ")}")
-            xrayProcess = Runtime.getRuntime().exec(xrayCmd)
+            val pb = ProcessBuilder(*xrayCmd)
+                .redirectErrorStream(true)
+            xrayProcess = pb.start()
+
+            // Start a thread to read xray output for logging
+            val process = xrayProcess!!
+            Thread {
+                try {
+                    process.inputStream.bufferedReader().forEachLine { line ->
+                        Log.i(TAG, "xray: $line")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "xray output reader stopped: ${e.message}")
+                }
+            }.apply {
+                isDaemon = true
+                start()
+            }
 
             // 3. Wait for SOCKS5 port to be ready
             waitForPort(socksPort, timeoutMs = 10000)
             Log.i(TAG, "xray SOCKS5 port $socksPort is ready")
+            xrayRunning = true
 
-            // 4. Create TUN interface with proper routing
+            // 4. Create TUN interface
             val builder = Builder()
                 .setSession("RustVPN")
                 .addAddress("10.0.0.2", 30)
@@ -91,11 +128,6 @@ class RustVpnService : VpnService() {
                 .setMtu(1500)
                 .setBlocking(true)
 
-            // Exclude our own app from VPN routing.
-            // This prevents a routing loop: xray's outbound traffic to the VPN server
-            // must NOT go through the TUN (which would loop back to xray via hev).
-            // Child processes (xray, hev) share our UID and are also excluded.
-            // hev reads/writes the TUN FD directly, so the exclusion doesn't affect it.
             try {
                 builder.addDisallowedApplication(packageName)
                 Log.i(TAG, "Excluded own package from VPN routing: $packageName")
@@ -108,29 +140,36 @@ class RustVpnService : VpnService() {
 
             val fd = tunFd!!.fd
             Log.i(TAG, "TUN interface established with fd=$fd")
+            tunActive = true
 
-            // 5. Start tun2socks (hev-socks5-tunnel) via JNI fork/exec
-            // We use a JNI helper because Runtime.exec() closes all non-standard FDs
-            // in the child process. The JNI fork/exec preserves the TUN FD so that
-            // hev-socks5-tunnel can access it via the "fd:" config parameter.
-            val hevPath = "$nativeLibDir/libhev.so"
+            // 5. Start tun2socks via JNI dlopen (not fork/exec)
             val hevConfigFile = File(filesDir, "hev_config.yml")
             writeHevConfig(hevConfigFile, fd, socksPort)
 
-            Log.i(TAG, "Starting tun2socks via JNI fork: $hevPath (tunFd=$fd)")
-            hevPid = TunHelper.nativeStartWithTunFd(hevPath, hevConfigFile.absolutePath, fd)
-            if (hevPid <= 0) {
-                throw IllegalStateException("Failed to start tun2socks (JNI fork returned $hevPid)")
+            Log.i(TAG, "Starting tun2socks via JNI dlopen: $hevLibPath (tunFd=$fd)")
+            val started = HevTunnel.nativeStart(hevLibPath, hevConfigFile.absolutePath, fd)
+            if (!started) {
+                throw IllegalStateException("Failed to start tun2socks (HevTunnel.nativeStart returned false)")
             }
-            Log.i(TAG, "tun2socks started with PID=$hevPid")
+
+            // 6. Verify hev is actually running
+            Thread.sleep(200)
+            if (!HevTunnel.nativeIsRunning()) {
+                throw IllegalStateException("tun2socks started but exited immediately")
+            }
+            hevRunning = true
+            Log.i(TAG, "tun2socks started and verified running")
 
             isRunning = true
-            Log.i(TAG, "VPN started successfully")
+            Log.i(TAG, "VPN started successfully (xray=OK, hev=OK, tun=OK)")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
             lastError = e.message
             isRunning = false
+            xrayRunning = false
+            hevRunning = false
+            tunActive = false
             cleanup()
             stopSelf()
         }
@@ -140,22 +179,25 @@ class RustVpnService : VpnService() {
         Log.i(TAG, "Stopping VPN")
         cleanup()
         isRunning = false
+        xrayRunning = false
+        hevRunning = false
+        tunActive = false
         lastError = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     private fun cleanup() {
-        // Stop hev-socks5-tunnel via native kill
-        if (hevPid > 0) {
-            try {
-                Log.i(TAG, "Killing tun2socks PID=$hevPid")
-                TunHelper.nativeKillProcess(hevPid)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error stopping tun2socks", e)
+        // Stop hev-socks5-tunnel via JNI
+        try {
+            if (HevTunnel.nativeIsRunning()) {
+                Log.i(TAG, "Stopping tun2socks via HevTunnel.nativeStop()")
+                HevTunnel.nativeStop()
             }
-            hevPid = -1
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping tun2socks", e)
         }
+
         try {
             xrayProcess?.destroy()
             xrayProcess = null
@@ -179,6 +221,9 @@ class RustVpnService : VpnService() {
     override fun onDestroy() {
         cleanup()
         isRunning = false
+        xrayRunning = false
+        hevRunning = false
+        tunActive = false
         super.onDestroy()
     }
 
@@ -195,8 +240,6 @@ class RustVpnService : VpnService() {
     }
 
     private fun writeHevConfig(file: File, tunFd: Int, socksPort: Int) {
-        // Use "fd:" instead of "name:" so hev uses the inherited TUN file descriptor
-        // directly rather than trying to open a TUN device by name (which requires root).
         val config = """
             tunnel:
               fd: $tunFd

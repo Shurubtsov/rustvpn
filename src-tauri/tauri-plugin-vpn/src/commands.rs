@@ -7,6 +7,12 @@ use crate::VpnPluginExt;
 pub struct VpnStatus {
     pub is_running: bool,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub xray_running: bool,
+    #[serde(default)]
+    pub hev_running: bool,
+    #[serde(default)]
+    pub tun_active: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

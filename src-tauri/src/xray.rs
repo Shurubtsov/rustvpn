@@ -201,9 +201,15 @@ impl XrayManager {
         let server_name = server.name.clone();
         let server_address = server.address.clone();
 
+        // Clone refs for post-connection verification
+        let verify_logs = self.logs.clone();
+        let verify_state = self.state.clone();
+        let verify_stats = self.stats.clone();
+
         // Shared flag for timeout coordination
         let started_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let started_flag_clone = started_flag.clone();
+        let started_flag_verify = started_flag.clone();
 
         // Connection timeout: kill xray if not started within 15 seconds
         let timeout_state = self.state.clone();
@@ -344,6 +350,118 @@ impl XrayManager {
             }
         });
 
+        // Post-connection verification: check SOCKS proxy and traffic flow
+        std::thread::spawn(move || {
+            // Wait for connection to be established (up to 20s)
+            for _ in 0..40 {
+                if started_flag_verify.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            if !started_flag_verify.load(std::sync::atomic::Ordering::Relaxed) {
+                return; // Timeout thread already handled this
+            }
+
+            // Step 1: Verify SOCKS5 proxy is reachable
+            let socks_addr = format!("127.0.0.1:{DEFAULT_SOCKS_PORT}");
+            match std::net::TcpStream::connect_timeout(
+                &socks_addr.parse().unwrap(),
+                Duration::from_secs(3),
+            ) {
+                Ok(_) => {
+                    push_log_entry(
+                        &verify_logs,
+                        "info",
+                        &format!("[verify] SOCKS5 proxy reachable on port {DEFAULT_SOCKS_PORT}"),
+                    );
+                    info!("[verify] SOCKS5 proxy reachable on port {DEFAULT_SOCKS_PORT}");
+                }
+                Err(e) => {
+                    push_log_entry(
+                        &verify_logs,
+                        "warning",
+                        &format!("[verify] SOCKS5 proxy NOT reachable on port {DEFAULT_SOCKS_PORT}: {e}"),
+                    );
+                    warn!("[verify] SOCKS5 proxy NOT reachable: {e}");
+                    return;
+                }
+            }
+
+            // Step 2: Check system proxy configuration
+            #[cfg(desktop)]
+            {
+                push_log_entry(
+                    &verify_logs,
+                    "info",
+                    &format!("[verify] System proxy configured for port {DEFAULT_SOCKS_PORT}"),
+                );
+            }
+
+            // Step 3: Wait and check for traffic flow
+            push_log_entry(&verify_logs, "info", "[verify] Waiting for traffic flow...");
+            std::thread::sleep(Duration::from_secs(5));
+
+            // Check if still connected
+            {
+                let state = verify_state.lock().unwrap();
+                if state.status != ConnectionStatus::Connected {
+                    return;
+                }
+            }
+
+            // Check cached stats (populated by the frontend's 1s polling loop)
+            let cached = verify_stats.lock().unwrap().clone();
+            let total_up = cached.total_upload;
+            let total_down = cached.total_download;
+
+            if total_up > 0 || total_down > 0 {
+                push_log_entry(
+                    &verify_logs,
+                    "info",
+                    &format!(
+                        "[verify] Traffic flowing — upload: {} bytes, download: {} bytes",
+                        total_up, total_down
+                    ),
+                );
+                info!("[verify] Traffic flowing — up: {total_up} B, down: {total_down} B");
+            } else {
+                push_log_entry(
+                    &verify_logs,
+                    "warning",
+                    "[verify] No traffic detected after 5s — VPN may not be routing correctly",
+                );
+                warn!("[verify] No traffic detected after 5s");
+
+                // Wait longer and check again
+                std::thread::sleep(Duration::from_secs(10));
+                {
+                    let state = verify_state.lock().unwrap();
+                    if state.status != ConnectionStatus::Connected {
+                        return;
+                    }
+                }
+                let cached = verify_stats.lock().unwrap().clone();
+                if cached.total_upload > 0 || cached.total_download > 0 {
+                    push_log_entry(
+                        &verify_logs,
+                        "info",
+                        &format!(
+                            "[verify] Traffic detected after 15s — upload: {} bytes, download: {} bytes",
+                            cached.total_upload, cached.total_download
+                        ),
+                    );
+                } else {
+                    push_log_entry(
+                        &verify_logs,
+                        "error",
+                        "[verify] Still no traffic after 15s — connection may be broken. Check server config and network.",
+                    );
+                    error!("[verify] No traffic after 15s, connection may be broken");
+                }
+            }
+        });
+
         Ok(())
     }
 
@@ -363,24 +481,195 @@ impl XrayManager {
         // Apply Android-specific modifications
         config_json = config::modify_config_for_android(&config_json)?;
 
-        // Start VPN via plugin
+        // Start VPN via plugin (this triggers the Android service asynchronously)
         app.vpn()
             .start_vpn(config_json, DEFAULT_SOCKS_PORT, server.address.clone())
             .map_err(|e| AppError::XrayProcess(format!("VPN plugin error: {e}")))?;
 
-        // Update status to connected (the actual connection happens asynchronously in the service,
-        // but we optimistically set it here; the frontend will poll for real status)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        // Poll the Android service status to verify the pipeline is actually working.
+        // Don't set Connected until both xray and hev are confirmed running.
+        // Log each verification step to the app log buffer for user visibility.
+        let state_ref = self.state.clone();
+        let logs_ref = self.logs.clone();
+        let stats_ref = self.stats.clone();
+        let app_handle = app.clone();
+        let server_name = server.name.clone();
+        let server_address = server.address.clone();
 
-        let mut state = self.state.lock().unwrap();
-        state.status = ConnectionStatus::Connected;
-        state.connected_since = Some(now);
-        state.server_name = Some(server.name.clone());
-        state.server_address = Some(server.address.clone());
-        state.error_message = None;
+        std::thread::spawn(move || {
+            push_log_entry(&logs_ref, "info", "[android] Starting VPN service...");
+
+            let max_attempts = 30; // 15 seconds at 500ms intervals
+            for attempt in 1..=max_attempts {
+                std::thread::sleep(Duration::from_millis(500));
+
+                let vpn_status = {
+                    let vpn = app_handle.vpn();
+                    vpn.get_status()
+                };
+
+                match vpn_status {
+                    Ok(status) => {
+                        // Log component status on first few polls and periodically
+                        if attempt <= 3 || attempt % 5 == 0 {
+                            push_log_entry(
+                                &logs_ref,
+                                "info",
+                                &format!(
+                                    "[android] Poll #{attempt}: xray={}, hev={}, tun={}, running={}",
+                                    status.xray_running, status.hev_running,
+                                    status.tun_active, status.is_running,
+                                ),
+                            );
+                        }
+
+                        if status.is_running {
+                            // Android service confirmed everything is running
+                            push_log_entry(
+                                &logs_ref,
+                                "info",
+                                &format!(
+                                    "[verify] Android VPN pipeline confirmed: xray={}, hev={}, tun={}",
+                                    status.xray_running, status.hev_running, status.tun_active,
+                                ),
+                            );
+
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+
+                            let mut state = state_ref.lock().unwrap();
+                            if state.status == ConnectionStatus::Connecting {
+                                state.status = ConnectionStatus::Connected;
+                                state.connected_since = Some(now);
+                                state.server_name = Some(server_name);
+                                state.server_address = Some(server_address);
+                                state.error_message = None;
+                                info!("Mobile VPN connected (verified by service)");
+                            }
+                            drop(state);
+                            let _ = app_handle.emit("connection-status-changed", "connected");
+
+                            // Post-connection: verify traffic flow
+                            push_log_entry(&logs_ref, "info", "[verify] Waiting for traffic flow...");
+                            std::thread::sleep(Duration::from_secs(5));
+
+                            // Check if still connected
+                            {
+                                let state = state_ref.lock().unwrap();
+                                if state.status != ConnectionStatus::Connected {
+                                    return;
+                                }
+                            }
+
+                            let cached = stats_ref.lock().unwrap().clone();
+                            if cached.total_upload > 0 || cached.total_download > 0 {
+                                push_log_entry(
+                                    &logs_ref,
+                                    "info",
+                                    &format!(
+                                        "[verify] Traffic flowing — upload: {} bytes, download: {} bytes",
+                                        cached.total_upload, cached.total_download,
+                                    ),
+                                );
+                                info!("[verify] Mobile traffic flowing — up: {} B, down: {} B", cached.total_upload, cached.total_download);
+                            } else {
+                                push_log_entry(
+                                    &logs_ref,
+                                    "warning",
+                                    "[verify] No traffic detected after 5s — VPN may not be routing correctly",
+                                );
+                                warn!("[verify] No mobile traffic after 5s");
+
+                                // Wait longer and check again
+                                std::thread::sleep(Duration::from_secs(10));
+                                {
+                                    let state = state_ref.lock().unwrap();
+                                    if state.status != ConnectionStatus::Connected {
+                                        return;
+                                    }
+                                }
+                                let cached = stats_ref.lock().unwrap().clone();
+                                if cached.total_upload > 0 || cached.total_download > 0 {
+                                    push_log_entry(
+                                        &logs_ref,
+                                        "info",
+                                        &format!(
+                                            "[verify] Traffic detected after 15s — upload: {} bytes, download: {} bytes",
+                                            cached.total_upload, cached.total_download,
+                                        ),
+                                    );
+                                } else {
+                                    push_log_entry(
+                                        &logs_ref,
+                                        "error",
+                                        "[verify] Still no traffic after 15s — connection may be broken. Check server config and network.",
+                                    );
+                                    error!("[verify] No mobile traffic after 15s, connection may be broken");
+                                }
+                            }
+                            return;
+                        }
+                        if let Some(err) = &status.last_error {
+                            // Service reported an error — clean up the Android service
+                            push_log_entry(
+                                &logs_ref,
+                                "error",
+                                &format!("[android] VPN service error: {err}"),
+                            );
+                            // Log which components failed
+                            if !status.xray_running {
+                                push_log_entry(&logs_ref, "error", "[android] xray-core failed to start");
+                            }
+                            if !status.hev_running {
+                                push_log_entry(&logs_ref, "error", "[android] hev-socks5-tunnel failed to start");
+                            }
+                            if !status.tun_active {
+                                push_log_entry(&logs_ref, "error", "[android] TUN interface not established");
+                            }
+                            let _ = app_handle.vpn().stop_vpn();
+                            let mut state = state_ref.lock().unwrap();
+                            if state.status == ConnectionStatus::Connecting {
+                                state.status = ConnectionStatus::Error;
+                                state.error_message = Some(err.clone());
+                                state.connected_since = None;
+                                warn!("Mobile VPN failed: {}", err);
+                            }
+                            let _ = app_handle.emit("connection-status-changed", "disconnected");
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to poll VPN status: {}", e);
+                        if attempt <= 2 {
+                            push_log_entry(
+                                &logs_ref,
+                                "warning",
+                                &format!("[android] Status poll failed: {e}"),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Timeout — service never confirmed running, clean up
+            push_log_entry(
+                &logs_ref,
+                "error",
+                "[android] Connection timeout — VPN service did not start within 15s",
+            );
+            let _ = app_handle.vpn().stop_vpn();
+            let mut state = state_ref.lock().unwrap();
+            if state.status == ConnectionStatus::Connecting {
+                state.status = ConnectionStatus::Error;
+                state.error_message =
+                    Some("Connection timeout — VPN service did not start within 15s".to_string());
+                state.connected_since = None;
+                warn!("Mobile VPN connection timeout");
+            }
+            let _ = app_handle.emit("connection-status-changed", "disconnected");
+        });
 
         Ok(())
     }

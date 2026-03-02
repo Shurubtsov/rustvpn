@@ -28,6 +28,9 @@ impl<R: tauri::Runtime> VpnPlugin<R> {
         Ok(VpnStatus {
             is_running: false,
             last_error: None,
+            xray_running: false,
+            hev_running: false,
+            tun_active: false,
         })
     }
 

@@ -177,21 +177,47 @@ jobs:
       - name: Initialize Tauri Android
         run: pnpm tauri android init
 
-      - name: Download Android binaries
+      - name: Download xray-core for Android
         shell: bash
         run: |
           JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
           mkdir -p "$JNILIBS_DIR"
 
-          # Download xray-core for Android ARM64
+          # Download xray-core for Android ARM64 (official release has proper Android binary)
           curl -fSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip" -o /tmp/xray-android.zip
           unzip -o /tmp/xray-android.zip xray -d /tmp/xray-android
           mv /tmp/xray-android/xray "$JNILIBS_DIR/libxray.so"
           chmod +x "$JNILIBS_DIR/libxray.so"
 
-          # Download hev-socks5-tunnel for Android ARM64
-          curl -fSL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-linux-arm64" -o "$JNILIBS_DIR/libhev.so"
-          chmod +x "$JNILIBS_DIR/libhev.so"
+      - name: Build hev-socks5-tunnel from source
+        shell: bash
+        run: |
+          JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNILIBS_DIR"
+
+          # The pre-built GitHub release is a Linux/glibc binary that cannot run on Android.
+          # Build from source with NDK to get a proper Android shared library.
+          export NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
+
+          git clone --depth 1 --branch "${HEV_VERSION}" \
+            https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-socks5-tunnel
+          cd /tmp/hev-socks5-tunnel
+          git submodule update --init --recursive
+
+          make \
+            CC="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" \
+            STRIP="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            -j$(nproc) \
+            shared
+
+          if [ ! -f bin/libhev-socks5-tunnel.so ]; then
+            echo "ERROR: shared library build failed"
+            exit 1
+          fi
+
+          cp bin/libhev-socks5-tunnel.so "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          chmod +x "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          cd "${GITHUB_WORKSPACE}"
 
       - name: Generate signing keystore
         run: |
