@@ -218,6 +218,19 @@ jobs:
           chmod +x "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
           cd "${GITHUB_WORKSPACE}"
 
+      - name: Configure native library extraction
+        shell: bash
+        run: |
+          # libxray.so is executed via Runtime.exec() and needs to be on the filesystem.
+          # AGP 8.x defaults to keeping native libs compressed in the APK; override this.
+          APP_GRADLE="src-tauri/gen/android/app/build.gradle.kts"
+          if [ -f "$APP_GRADLE" ]; then
+            sed -i '/^android {/a\    packaging { jniLibs { useLegacyPackaging = true } }' "$APP_GRADLE"
+            echo "Patched $APP_GRADLE with useLegacyPackaging = true"
+          else
+            echo "WARNING: $APP_GRADLE not found, relying on manifest extractNativeLibs=true"
+          fi
+
       - name: Generate signing keystore
         run: |
           keytool -genkey -v \

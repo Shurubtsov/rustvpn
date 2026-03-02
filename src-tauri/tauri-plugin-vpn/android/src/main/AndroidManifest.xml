@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
-    <application>
+    <!-- extractNativeLibs must be true because libxray.so is executed via Runtime.exec()
+         and libhev.so is loaded via dlopen() with a filesystem path. Both require the
+         native libraries to be extracted to disk, not kept compressed inside the APK. -->
+    <application
+        android:extractNativeLibs="true"
+        tools:replace="android:extractNativeLibs">
         <service
             android:name=".RustVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
