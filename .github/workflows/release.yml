@@ -9,7 +9,6 @@ on:
         type: string
 
 env:
-  XRAY_VERSION: "v26.2.6"
   HEV_VERSION: "2.14.4"
 
 jobs:
@@ -174,20 +173,36 @@ jobs:
       - name: Install Android NDK
         run: sdkmanager "ndk;27.0.12077973"
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
       - name: Initialize Tauri Android
         run: pnpm tauri android init
 
-      - name: Download xray-core for Android
+      - name: Build AndroidLibXrayLite AAR
         shell: bash
         run: |
-          JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
-          mkdir -p "$JNILIBS_DIR"
+          LIBS_DIR="src-tauri/tauri-plugin-vpn/android/libs"
+          mkdir -p "$LIBS_DIR"
 
-          # Download xray-core for Android ARM64 (official release has proper Android binary)
-          curl -fSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip" -o /tmp/xray-android.zip
-          unzip -o /tmp/xray-android.zip xray -d /tmp/xray-android
-          mv /tmp/xray-android/xray "$JNILIBS_DIR/libxray.so"
-          chmod +x "$JNILIBS_DIR/libxray.so"
+          git clone --depth 1 https://github.com/niclas-niclas/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
+          cd /tmp/AndroidLibXrayLite
+          gomobile bind -v \
+            -target=android/arm64 \
+            -androidapi 21 \
+            -ldflags='-s -w' \
+            -o /tmp/libv2ray.aar \
+            ./
+          cp /tmp/libv2ray.aar "${GITHUB_WORKSPACE}/${LIBS_DIR}/libv2ray.aar"
+          cd "${GITHUB_WORKSPACE}"
 
       - name: Build hev-socks5-tunnel from source
         shell: bash
@@ -221,8 +236,9 @@ jobs:
       - name: Configure native library extraction
         shell: bash
         run: |
-          # libxray.so is executed via Runtime.exec() and needs to be on the filesystem.
-          # AGP 8.x defaults to keeping native libs compressed in the APK; override this.
+          # libhev.so is loaded via dlopen() with a filesystem path and needs to be
+          # extracted to disk, not kept compressed inside the APK.
+          # AGP 8.x defaults to keeping native libs compressed; override this.
           APP_GRADLE="src-tauri/gen/android/app/build.gradle.kts"
           if [ -f "$APP_GRADLE" ]; then
             sed -i '/^android {/a\    packaging { jniLibs { useLegacyPackaging = true } }' "$APP_GRADLE"

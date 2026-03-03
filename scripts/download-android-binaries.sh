@@ -1,36 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download/build Android ARM64 binaries for RustVPN
+# Build Android ARM64 binaries for RustVPN
 # Usage: ./scripts/download-android-binaries.sh
 #
-# Requires: NDK_HOME or ANDROID_NDK_HOME to be set (for hev-socks5-tunnel compilation)
+# Requires:
+#   - NDK_HOME or ANDROID_NDK_HOME set (for hev-socks5-tunnel compilation)
+#   - Go 1.22+ and ANDROID_HOME set (for AndroidLibXrayLite AAR build)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TARGET_DIR="$PROJECT_DIR/src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+JNILIBS_DIR="$PROJECT_DIR/src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+LIBS_DIR="$PROJECT_DIR/src-tauri/tauri-plugin-vpn/android/libs"
 
-XRAY_VERSION="${XRAY_VERSION:-1.8.24}"
 HEV_VERSION="${HEV_VERSION:-2.14.4}"
 
 echo "=== Preparing Android ARM64 binaries ==="
-echo "xray-core version: $XRAY_VERSION"
 echo "hev-socks5-tunnel version: $HEV_VERSION"
-echo "Target directory: $TARGET_DIR"
+echo "jniLibs directory: $JNILIBS_DIR"
+echo "AAR libs directory: $LIBS_DIR"
 echo
 
-mkdir -p "$TARGET_DIR"
+mkdir -p "$JNILIBS_DIR"
+mkdir -p "$LIBS_DIR"
 
-# Download xray-core (pre-built Android ARM64 binary from official releases)
-echo "--- Downloading xray-core ---"
-XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
-XRAY_TMP=$(mktemp -d)
-curl -fSL "$XRAY_URL" -o "$XRAY_TMP/xray.zip"
-unzip -o "$XRAY_TMP/xray.zip" xray -d "$XRAY_TMP"
-mv "$XRAY_TMP/xray" "$TARGET_DIR/libxray.so"
-chmod +x "$TARGET_DIR/libxray.so"
-rm -rf "$XRAY_TMP"
-echo "xray-core downloaded and renamed to libxray.so"
+# Build AndroidLibXrayLite AAR via gomobile
+echo "--- Building AndroidLibXrayLite AAR ---"
+
+if ! command -v go &>/dev/null; then
+    echo "ERROR: Go not found. Install Go 1.22+ and ensure it is on PATH."
+    exit 1
+fi
+echo "Go version: $(go version)"
+
+if [ -z "${ANDROID_HOME:-}" ]; then
+    echo "ERROR: ANDROID_HOME not set."
+    exit 1
+fi
+
+# Install gomobile if not present
+if ! command -v gomobile &>/dev/null; then
+    echo "Installing gomobile..."
+    go install golang.org/x/mobile/cmd/gomobile@latest
+    go install golang.org/x/mobile/cmd/gobind@latest
+fi
+gomobile init
+
+AAR_TMP=$(mktemp -d)
+git clone --depth 1 https://github.com/niclas-niclas/AndroidLibXrayLite.git "$AAR_TMP/AndroidLibXrayLite"
+
+cd "$AAR_TMP/AndroidLibXrayLite"
+gomobile bind -v \
+    -target=android/arm64 \
+    -androidapi 21 \
+    -ldflags='-s -w' \
+    -o "$AAR_TMP/libv2ray.aar" \
+    ./
+
+cp "$AAR_TMP/libv2ray.aar" "$LIBS_DIR/libv2ray.aar"
+cd "$PROJECT_DIR"
+rm -rf "$AAR_TMP"
+echo "AndroidLibXrayLite AAR built and copied to $LIBS_DIR/libv2ray.aar"
 
 # Build hev-socks5-tunnel from source using ndk-build
 # The pre-built GitHub release is a Linux/glibc binary that cannot run on Android (bionic libc).
@@ -70,13 +100,15 @@ if [ ! -f "$HEV_SO" ]; then
     exit 1
 fi
 
-cp "$HEV_SO" "$TARGET_DIR/libhev.so"
-chmod +x "$TARGET_DIR/libhev.so"
+cp "$HEV_SO" "$JNILIBS_DIR/libhev.so"
+chmod +x "$JNILIBS_DIR/libhev.so"
 
 cd "$PROJECT_DIR"
 rm -rf "$HEV_TMP"
 echo "hev-socks5-tunnel built from source and copied to libhev.so"
 
 echo
-echo "=== Done! Binaries placed in $TARGET_DIR ==="
-ls -la "$TARGET_DIR"
+echo "=== Done! ==="
+echo "AAR: $LIBS_DIR/libv2ray.aar"
+echo "jniLibs:"
+ls -la "$JNILIBS_DIR"

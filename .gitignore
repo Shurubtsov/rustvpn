@@ -11,6 +11,9 @@ src-tauri/target/
 # Run: ./scripts/download-xray.sh
 src-tauri/binaries/
 
+# AndroidLibXrayLite AAR (built via scripts/build-libv2ray-aar.sh)
+src-tauri/tauri-plugin-vpn/android/libs/
+
 # Generated
 src-tauri/gen/
 

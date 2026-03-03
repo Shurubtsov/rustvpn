@@ -8,8 +8,10 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import go.Seq
+import libv2ray.CoreController
+import libv2ray.Libv2ray
 import java.io.File
-import java.io.FileOutputStream
 
 class RustVpnService : VpnService() {
 
@@ -43,10 +45,12 @@ class RustVpnService : VpnService() {
 
         @Volatile
         var tunActive = false
+
+        @Volatile
+        var xrayController: CoreController? = null
     }
 
     private var tunFd: ParcelFileDescriptor? = null
-    private var xrayProcess: Process? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -76,51 +80,32 @@ class RustVpnService : VpnService() {
 
             val nativeLibDir = applicationInfo.nativeLibraryDir
 
-            // Verify required binaries exist
-            val xrayPath = "$nativeLibDir/libxray.so"
+            // Verify hev library exists (xray is now loaded via AAR, no binary needed)
             val hevLibPath = "$nativeLibDir/libhev.so"
-
-            if (!File(xrayPath).exists()) {
-                throw IllegalStateException("xray binary not found at $xrayPath")
-            }
             if (!File(hevLibPath).exists()) {
                 throw IllegalStateException("hev library not found at $hevLibPath")
             }
-            Log.i(TAG, "Verified binaries: xray=$xrayPath, hev=$hevLibPath")
+            Log.i(TAG, "Verified hev library: $hevLibPath")
 
-            // 1. Write xray config to internal storage
-            val configFile = File(filesDir, "xray_config.json")
-            FileOutputStream(configFile).use { it.write(configJson.toByteArray()) }
-            Log.i(TAG, "Wrote xray config to ${configFile.absolutePath}")
+            // 1. Start xray in-process via libv2ray AAR (no child process)
+            Log.i(TAG, "Initializing libv2ray AAR...")
+            Seq.setContext(applicationContext)
+            Libv2ray.initCoreEnv()
 
-            // 2. Start xray, capturing stdout/stderr for error reporting
-            val xrayCmd = arrayOf(xrayPath, "run", "-c", configFile.absolutePath)
-            Log.i(TAG, "Starting xray: ${xrayCmd.joinToString(" ")}")
-            val pb = ProcessBuilder(*xrayCmd)
-                .redirectErrorStream(true)
-            xrayProcess = pb.start()
+            val controller = Libv2ray.newCoreController()
+            // tunFd=0 tells xray not to use built-in TUN; xray only opens SOCKS5 on port $socksPort.
+            // hev-socks5-tunnel bridges TUN→SOCKS5 separately.
+            Log.i(TAG, "Starting xray in-process via libv2ray AAR...")
+            controller.startLoop(configJson, 0)
+            xrayController = controller
+            Log.i(TAG, "xray started in-process via libv2ray AAR")
 
-            // Start a thread to read xray output for logging
-            val process = xrayProcess!!
-            Thread {
-                try {
-                    process.inputStream.bufferedReader().forEachLine { line ->
-                        Log.i(TAG, "xray: $line")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "xray output reader stopped: ${e.message}")
-                }
-            }.apply {
-                isDaemon = true
-                start()
-            }
-
-            // 3. Wait for SOCKS5 port to be ready
+            // 2. Wait for SOCKS5 port to be ready
             waitForPort(socksPort, timeoutMs = 10000)
             Log.i(TAG, "xray SOCKS5 port $socksPort is ready")
             xrayRunning = true
 
-            // 4. Create TUN interface
+            // 3. Create TUN interface
             val builder = Builder()
                 .setSession("RustVPN")
                 .addAddress("10.0.0.2", 30)
@@ -145,7 +130,7 @@ class RustVpnService : VpnService() {
             Log.i(TAG, "TUN interface established with fd=$fd")
             tunActive = true
 
-            // 5. Start tun2socks via JNI dlopen (not fork/exec)
+            // 4. Start tun2socks via JNI dlopen (not fork/exec)
             val hevConfigFile = File(filesDir, "hev_config.yml")
             writeHevConfig(hevConfigFile, fd, socksPort)
 
@@ -155,7 +140,7 @@ class RustVpnService : VpnService() {
                 throw IllegalStateException("Failed to start tun2socks (HevTunnel.nativeStart returned false)")
             }
 
-            // 6. Verify hev is actually running
+            // 5. Verify hev is actually running
             Thread.sleep(200)
             if (!HevTunnel.nativeIsRunning()) {
                 throw IllegalStateException("tun2socks started but exited immediately")
@@ -202,8 +187,9 @@ class RustVpnService : VpnService() {
         }
 
         try {
-            xrayProcess?.destroy()
-            xrayProcess = null
+            xrayController?.stopLoop()
+            xrayController = null
+            Log.i(TAG, "xray stopped via libv2ray AAR")
         } catch (e: Exception) {
             Log.w(TAG, "Error stopping xray", e)
         }
@@ -258,7 +244,7 @@ class RustVpnService : VpnService() {
               task-stack-size: 81920
               log-level: info
         """.trimIndent()
-        FileOutputStream(file).use { it.write(config.toByteArray()) }
+        java.io.FileOutputStream(file).use { it.write(config.toByteArray()) }
     }
 
     private fun createNotificationChannel() {

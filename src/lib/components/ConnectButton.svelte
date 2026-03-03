@@ -12,7 +12,7 @@
 
 	const { status, isLoading, isTransitioning, isConnected, onclick }: Props = $props();
 
-	const buttonLabel = $derived(() => {
+	const buttonLabel = $derived.by(() => {
 		if (isLoading || isTransitioning) {
 			return status === 'disconnecting' ? 'Disconnecting...' : 'Connecting...';
 		}
@@ -54,8 +54,8 @@
 					: 'border-zinc-600 text-zinc-300 hover:border-zinc-400 hover:text-zinc-100 active:scale-95',
 			isDisabled && 'opacity-60 cursor-not-allowed'
 		)}
-		aria-label={buttonLabel()}
+		aria-label={buttonLabel}
 	>
-		{buttonLabel()}
+		{buttonLabel}
 	</button>
 </div>

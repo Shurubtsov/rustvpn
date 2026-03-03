@@ -69,6 +69,7 @@ function createConnectionStore() {
 
 	async function connectVpn(config: ServerConfig) {
 		isLoading = true;
+		info = { ...info, status: 'connecting', error_message: null };
 		try {
 			await connect(config);
 			await refresh();
@@ -86,6 +87,7 @@ function createConnectionStore() {
 
 	async function disconnectVpn() {
 		isLoading = true;
+		info = { ...info, status: 'disconnecting' };
 		try {
 			await disconnect();
 			await refresh();

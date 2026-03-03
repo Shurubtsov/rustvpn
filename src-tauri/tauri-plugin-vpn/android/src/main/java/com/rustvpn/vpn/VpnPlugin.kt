@@ -93,34 +93,13 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun queryStats(invoke: Invoke) {
         try {
-            val nativeLibDir = activity.applicationInfo.nativeLibraryDir
-            val xrayPath = "$nativeLibDir/libxray.so"
-
-            val process = Runtime.getRuntime().exec(
-                arrayOf(xrayPath, "api", "statsquery", "-s", "127.0.0.1:10085")
-            )
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-
-            // Parse the JSON output to extract upload/download
+            val controller = RustVpnService.xrayController
             var upload = 0L
             var download = 0L
-            try {
-                val json = org.json.JSONObject(output)
-                val stats = json.optJSONArray("stat")
-                if (stats != null) {
-                    for (i in 0 until stats.length()) {
-                        val entry = stats.getJSONObject(i)
-                        val name = entry.optString("name", "")
-                        val value = entry.optLong("value", 0)
-                        when (name) {
-                            "outbound>>>proxy>>>traffic>>>uplink" -> upload = value
-                            "outbound>>>proxy>>>traffic>>>downlink" -> download = value
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                // Stats parsing failed, return zeros
+
+            if (controller != null) {
+                upload = controller.queryStats("proxy", "uplink")
+                download = controller.queryStats("proxy", "downlink")
             }
 
             val result = JSObject().apply {
