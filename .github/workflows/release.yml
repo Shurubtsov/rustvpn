@@ -9,6 +9,7 @@ on:
         type: string
 
 env:
+  XRAY_VERSION: "v26.2.6"
   HEV_VERSION: "2.14.4"
 
 jobs:
