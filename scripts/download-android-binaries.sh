@@ -47,7 +47,7 @@ fi
 gomobile init
 
 AAR_TMP=$(mktemp -d)
-git clone --depth 1 https://github.com/niclas-niclas/AndroidLibXrayLite.git "$AAR_TMP/AndroidLibXrayLite"
+git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git "$AAR_TMP/AndroidLibXrayLite"
 
 cd "$AAR_TMP/AndroidLibXrayLite"
 gomobile bind -v \

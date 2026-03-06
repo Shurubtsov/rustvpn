@@ -42,7 +42,7 @@ BUILD_TMP=$(mktemp -d)
 trap 'rm -rf "$BUILD_TMP"' EXIT
 
 echo "--- Cloning AndroidLibXrayLite ---"
-git clone --depth 1 https://github.com/niclas-niclas/AndroidLibXrayLite.git "$BUILD_TMP/AndroidLibXrayLite"
+git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git "$BUILD_TMP/AndroidLibXrayLite"
 
 cd "$BUILD_TMP/AndroidLibXrayLite"
 

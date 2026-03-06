@@ -193,7 +193,7 @@ jobs:
           LIBS_DIR="src-tauri/tauri-plugin-vpn/android/libs"
           mkdir -p "$LIBS_DIR"
 
-          git clone --depth 1 https://github.com/niclas-niclas/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
+          git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
           cd /tmp/AndroidLibXrayLite
           gomobile bind -v \
             -target=android/arm64 \
