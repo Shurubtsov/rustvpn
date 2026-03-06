@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import go.Seq
+import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
 import java.io.File
@@ -90,9 +91,17 @@ class RustVpnService : VpnService() {
             // 1. Start xray in-process via libv2ray AAR (no child process)
             Log.i(TAG, "Initializing libv2ray AAR...")
             Seq.setContext(applicationContext)
-            Libv2ray.initCoreEnv()
+            Libv2ray.initCoreEnv(filesDir.absolutePath, "")
 
-            val controller = Libv2ray.newCoreController()
+            val handler = object : CoreCallbackHandler {
+                override fun startup(): Long = 0
+                override fun shutdown(): Long = 0
+                override fun onEmitStatus(p0: Long, p1: String?): Long {
+                    Log.d(TAG, "xray status: $p0 $p1")
+                    return 0
+                }
+            }
+            val controller = Libv2ray.newCoreController(handler)
             // tunFd=0 tells xray not to use built-in TUN; xray only opens SOCKS5 on port $socksPort.
             // hev-socks5-tunnel bridges TUN→SOCKS5 separately.
             Log.i(TAG, "Starting xray in-process via libv2ray AAR...")

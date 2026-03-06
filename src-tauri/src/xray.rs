@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use log::{error, info, warn};
+#[allow(unused_imports)]
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 #[cfg(desktop)]
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -26,12 +27,15 @@ pub struct XrayManager {
     #[cfg(desktop)]
     child: Arc<Mutex<Option<CommandChild>>>,
     state: Arc<Mutex<ConnectionInfo>>,
+    #[cfg(desktop)]
     config_path: Arc<Mutex<Option<std::path::PathBuf>>>,
     stats: Arc<Mutex<SpeedStats>>,
     prev_uplink: Arc<Mutex<u64>>,
     prev_downlink: Arc<Mutex<u64>>,
     logs: Arc<Mutex<VecDeque<LogEntry>>>,
+    #[cfg(desktop)]
     bypass_domains: Arc<Mutex<Vec<String>>>,
+    #[cfg(desktop)]
     bypass_subnets: Arc<Mutex<Vec<String>>>,
     detected_vpns: Arc<Mutex<Vec<DetectedVpn>>>,
 }
@@ -48,12 +52,15 @@ impl XrayManager {
             #[cfg(desktop)]
             child: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(ConnectionInfo::default())),
+            #[cfg(desktop)]
             config_path: Arc::new(Mutex::new(None)),
             stats: Arc::new(Mutex::new(SpeedStats::default())),
             prev_uplink: Arc::new(Mutex::new(0)),
             prev_downlink: Arc::new(Mutex::new(0)),
             logs: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(desktop)]
             bypass_domains: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(desktop)]
             bypass_subnets: Arc::new(Mutex::new(Vec::new())),
             detected_vpns: Arc::new(Mutex::new(Vec::new())),
         }
@@ -838,6 +845,7 @@ impl XrayManager {
     }
 
     /// Parse xray statsquery JSON output
+    #[cfg(desktop)]
     fn parse_stats_output(output: &str) -> (u64, u64) {
         let mut uplink: u64 = 0;
         let mut downlink: u64 = 0;
