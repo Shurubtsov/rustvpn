@@ -11,6 +11,70 @@ const TUN_GW: &str = "198.18.0.0";
 const TUN_MTU: &str = "8500";
 const HELPER_NAME: &str = "rustvpn-helper";
 
+/// Check if a stale TUN device exists from a previous crash and clean it up.
+pub fn cleanup_stale_tun(config_dir: &Path) {
+    let tun_exists = Command::new("ip")
+        .args(["link", "show", TUN_NAME])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !tun_exists {
+        return;
+    }
+
+    warn!("Stale TUN device {TUN_NAME} found from previous session, cleaning up...");
+
+    if let Err(e) = stop_tun(config_dir) {
+        warn!("Normal TUN cleanup failed: {e}, attempting force cleanup...");
+        // Force: kill hev by name, remove routes and TUN
+        let helper = resolve_helper().ok();
+        let pid_file = config_dir.join("hev.pid");
+        let gw_file = config_dir.join("tun_gateway.txt");
+
+        let mut args = if let Some(h) = helper {
+            vec![h, "stop".to_string(), pid_file.to_string_lossy().to_string(),
+                 TUN_NAME.to_string(), TUN_GW.to_string()]
+        } else {
+            // No helper — build inline script
+            let script = format!(
+                "pkill -f hev-socks5-tunnel 2>/dev/null; \
+                 ip route del default via {TUN_GW} dev {TUN_NAME} 2>/dev/null; \
+                 ip link del {TUN_NAME} 2>/dev/null"
+            );
+            vec!["bash".to_string(), "-c".to_string(), script]
+        };
+
+        if gw_file.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&gw_file) {
+                let lines: Vec<&str> = contents.lines().collect();
+                if lines.len() >= 3 {
+                    args.push(lines[0].to_string());
+                    args.push(lines[1].to_string());
+                    args.push(lines[2].to_string());
+                }
+            }
+            let _ = std::fs::remove_file(&gw_file);
+        }
+
+        let _ = Command::new("pkexec").args(&args).output();
+        let _ = std::fs::remove_file(config_dir.join("hev_config.yml"));
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    let still_exists = Command::new("ip")
+        .args(["link", "show", TUN_NAME])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if still_exists {
+        warn!("TUN device still exists after cleanup — may need manual intervention");
+    } else {
+        info!("Stale TUN device cleaned up successfully");
+    }
+}
+
 /// Resolve the helper script path. Checks /usr/local/bin first (installed),
 /// then falls back to the project's scripts/ directory (dev mode).
 fn resolve_helper() -> Result<String, AppError> {
@@ -57,7 +121,8 @@ pub fn start_tun(
     let gw_file = config_dir.join("tun_gateway.txt");
     std::fs::write(&gw_file, format!("{server_ip}\n{gateway}\n{dev}"))?;
 
-    // Build args for helper
+    // Build args for helper (includes app PID for watchdog)
+    let app_pid = std::process::id().to_string();
     let mut args = vec![
         helper.clone(),
         "start".to_string(),
@@ -71,6 +136,7 @@ pub fn start_tun(
         server_ip.to_string(),
         gateway.clone(),
         dev.clone(),
+        app_pid,
     ];
 
     // Append bypass subnets as additional args

@@ -34,6 +34,14 @@ pub fn run() {
                 )?;
             }
 
+            // Clean up stale TUN from previous crash (Linux only)
+            #[cfg(target_os = "linux")]
+            {
+                let config_dir = app.handle().path().app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+                tun::cleanup_stale_tun(&config_dir);
+            }
+
             app.manage(XrayManager::new());
 
             let handle = app.handle().clone();
