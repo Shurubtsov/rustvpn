@@ -39,6 +39,13 @@ Desktop VPN client using VLESS+REALITY protocol via xray-core sidecar. Built wit
 - TypeScript interfaces mirror Rust structs in `src/lib/types/index.ts`
 - Use shadcn-svelte components where possible
 
+### Releases
+- **Always bump version** in ALL three files before tagging a release:
+  - `package.json` → `"version": "x.y.z"`
+  - `src-tauri/Cargo.toml` → `version = "x.y.z"`
+  - `src-tauri/tauri.conf.json` → `"version": "x.y.z"`
+- Version must match the git tag (e.g. tag `v0.4.0` → version `0.4.0` in all files)
+
 ### General
 - Never commit credentials or secrets
 - Keep xray-core binary in .gitignore (large binary)
