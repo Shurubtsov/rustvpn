@@ -1,0 +1,140 @@
+# Dockerfile.android — Build RustVPN Android APK without local SDK
+#
+# Usage:
+#   docker build -f Dockerfile.android -t rustvpn-android .
+#   docker run --rm -v $(pwd)/release-assets:/out rustvpn-android
+#
+# Then install:
+#   adb install -r release-assets/*.apk
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Base system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    unzip \
+    wget \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Java 17 (Temurin) ──
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# ── Android SDK + NDK ──
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"
+
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
+    curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdline-tools.zip && \
+    unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools && \
+    mv /tmp/cmdline-tools/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest && \
+    rm -rf /tmp/cmdline-tools /tmp/cmdline-tools.zip
+
+RUN yes | sdkmanager --licenses > /dev/null 2>&1 && \
+    sdkmanager \
+    "platform-tools" \
+    "platforms;android-34" \
+    "build-tools;34.0.0" \
+    "ndk;27.0.12077973"
+
+ENV NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
+
+# ── Rust stable + Android target ──
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup target add aarch64-linux-android
+
+# ── Go 1.22 + gomobile ──
+RUN curl -sL https://go.dev/dl/go1.22.10.linux-amd64.tar.gz | tar -xz -C /usr/local
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+RUN go install golang.org/x/mobile/cmd/gomobile@latest && \
+    go install golang.org/x/mobile/cmd/gobind@latest && \
+    gomobile init
+
+# ── Node.js 22 + pnpm 9 ──
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@9
+
+# ── Copy project source ──
+WORKDIR /app
+COPY . .
+
+# ── Install frontend dependencies ──
+RUN pnpm install
+
+# ── Build AndroidLibXrayLite AAR ──
+RUN mkdir -p src-tauri/tauri-plugin-vpn/android/libs && \
+    git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite && \
+    cd /tmp/AndroidLibXrayLite && \
+    gomobile bind -v \
+      -target=android/arm64 \
+      -androidapi 21 \
+      -ldflags='-s -w' \
+      -o /tmp/libv2ray.aar \
+      ./ && \
+    cp /tmp/libv2ray.aar /app/src-tauri/tauri-plugin-vpn/android/libs/libv2ray.aar && \
+    cd /app && rm -rf /tmp/AndroidLibXrayLite
+
+# ── Build hev-socks5-tunnel from source ──
+ENV HEV_VERSION=2.14.4
+RUN mkdir -p src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a && \
+    mkdir -p /tmp/hev-build && \
+    git clone --depth 1 --branch "${HEV_VERSION}" --recursive \
+      https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-build/jni && \
+    cd /tmp/hev-build && \
+    "${NDK_HOME}/ndk-build" APP_ABI=arm64-v8a -j$(nproc) && \
+    cp /tmp/hev-build/libs/arm64-v8a/libhev-socks5-tunnel.so \
+       /app/src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/libhev.so && \
+    chmod +x /app/src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/libhev.so && \
+    cd /app && rm -rf /tmp/hev-build
+
+# ── Initialize Tauri Android & patch gradle for native lib extraction ──
+RUN pnpm tauri android init && \
+    APP_GRADLE="src-tauri/gen/android/app/build.gradle.kts" && \
+    if [ -f "$APP_GRADLE" ]; then \
+      sed -i '/^android {/a\    packaging { jniLibs { useLegacyPackaging = true } }' "$APP_GRADLE"; \
+      echo "Patched $APP_GRADLE with useLegacyPackaging = true"; \
+    fi
+
+# ── Build APK ──
+RUN pnpm tauri android build --apk
+
+# ── Sign APK ──
+RUN set -e && \
+    keytool -genkey -v \
+      -keystore /tmp/release.keystore \
+      -alias rustvpn \
+      -keyalg RSA -keysize 2048 -validity 10000 \
+      -storepass rustvpn123 \
+      -keypass rustvpn123 \
+      -dname "CN=RustVPN, O=RustVPN, L=Unknown, ST=Unknown, C=US" && \
+    UNSIGNED=$(find src-tauri/gen/android -name "*.apk" | head -1) && \
+    BUILD_TOOLS="${ANDROID_HOME}/build-tools/34.0.0" && \
+    "${BUILD_TOOLS}/zipalign" -v -p 4 "$UNSIGNED" /tmp/aligned.apk && \
+    "${BUILD_TOOLS}/apksigner" sign \
+      --ks /tmp/release.keystore \
+      --ks-key-alias rustvpn \
+      --ks-pass pass:rustvpn123 \
+      --key-pass pass:rustvpn123 \
+      --out /tmp/signed.apk \
+      /tmp/aligned.apk && \
+    "${BUILD_TOOLS}/apksigner" verify /tmp/signed.apk && \
+    cp /tmp/signed.apk /app/RustVPN_arm64.apk
+
+# ── Entrypoint: copy signed APK to /out ──
+CMD set -e && \
+    mkdir -p /out && \
+    cp /app/RustVPN_arm64.apk /out/RustVPN_arm64.apk && \
+    echo "Signed APK copied to /out/RustVPN_arm64.apk"

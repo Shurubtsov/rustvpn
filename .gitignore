@@ -35,5 +35,8 @@ creds
 # Claude Code session files
 .claude/.edited-files
 
+# Release assets
+release-assets/
+
 # Logs
 *.log

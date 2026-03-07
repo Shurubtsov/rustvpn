@@ -20,7 +20,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 /* Function pointer types matching hev-socks5-tunnel's API */
-typedef int (*hev_main_from_file_func)(const char *config_path);
+typedef int (*hev_main_from_file_func)(const char *config_path, int tun_fd);
 typedef void (*hev_quit_func)(void);
 
 /* State */
@@ -33,14 +33,15 @@ static volatile int hev_running = 0;
 /* Thread argument */
 struct hev_thread_args {
     char config_path[512];
+    int tun_fd;
 };
 
 static void *hev_thread_func(void *arg) {
     struct hev_thread_args *args = (struct hev_thread_args *)arg;
 
-    LOGI("hev thread started, config=%s", args->config_path);
+    LOGI("hev thread started, config=%s, tun_fd=%d", args->config_path, args->tun_fd);
 
-    int ret = hev_main_from_file(args->config_path);
+    int ret = hev_main_from_file(args->config_path, args->tun_fd);
 
     LOGI("hev_socks5_tunnel_main_from_file returned %d", ret);
 
@@ -109,6 +110,7 @@ Java_com_rustvpn_vpn_HevTunnel_nativeStart(
     }
     strncpy(args->config_path, configPath, sizeof(args->config_path) - 1);
     args->config_path[sizeof(args->config_path) - 1] = '\0';
+    args->tun_fd = (int)tunFd;
 
     (*env)->ReleaseStringUTFChars(env, jLibPath, libPath);
     (*env)->ReleaseStringUTFChars(env, jConfigPath, configPath);
