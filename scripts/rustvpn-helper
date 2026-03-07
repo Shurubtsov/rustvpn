@@ -1,0 +1,78 @@
+#!/bin/bash
+# Privileged helper for RustVPN TUN operations.
+# Intended to be run via pkexec with a polkit policy that caches credentials.
+set -euo pipefail
+
+ACTION="${1:-}"
+shift || true
+
+case "$ACTION" in
+  start)
+    HEV_BIN="$1"
+    HEV_CONFIG="$2"
+    PID_FILE="$3"
+    TUN_NAME="$4"
+    TUN_ADDR="$5"
+    TUN_MTU="$6"
+    TUN_GW="$7"
+    SERVER_IP="$8"
+    GATEWAY="$9"
+    DEV="${10}"
+    shift 10
+
+    # Start hev-socks5-tunnel in background
+    "$HEV_BIN" "$HEV_CONFIG" &
+    HEV_PID=$!
+    echo $HEV_PID > "$PID_FILE"
+
+    # Wait for TUN device to appear
+    for i in $(seq 1 30); do
+      ip link show "$TUN_NAME" >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+
+    # Configure TUN device
+    ip addr add "$TUN_ADDR" dev "$TUN_NAME" 2>/dev/null || true
+    ip link set "$TUN_NAME" mtu "$TUN_MTU" up
+
+    # Bypass route for VPN server (prevent routing loop)
+    ip route add "${SERVER_IP}/32" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
+
+    # Bypass routes for additional subnets (passed as remaining args)
+    for SUBNET in "$@"; do
+      ip route add "$SUBNET" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
+    done
+
+    # Default route through TUN
+    ip route add default via "$TUN_GW" dev "$TUN_NAME" metric 1
+    ;;
+
+  stop)
+    PID_FILE="$1"
+    TUN_NAME="$2"
+    TUN_GW="$3"
+    SERVER_IP="${4:-}"
+    GATEWAY="${5:-}"
+    DEV="${6:-}"
+
+    # Kill hev-socks5-tunnel
+    if [ -f "$PID_FILE" ]; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null || true
+      rm -f "$PID_FILE"
+    fi
+
+    # Remove bypass route for VPN server
+    if [ -n "$SERVER_IP" ] && [ -n "$GATEWAY" ] && [ -n "$DEV" ]; then
+      ip route del "${SERVER_IP}/32" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
+    fi
+
+    # Remove default route and TUN device
+    ip route del default via "$TUN_GW" dev "$TUN_NAME" 2>/dev/null || true
+    ip link del "$TUN_NAME" 2>/dev/null || true
+    ;;
+
+  *)
+    echo "Usage: rustvpn-helper {start|stop} [args...]" >&2
+    exit 1
+    ;;
+esac

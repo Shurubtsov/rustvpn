@@ -19,6 +19,8 @@ use crate::models::{
 use crate::network;
 #[cfg(desktop)]
 use crate::proxy;
+#[cfg(target_os = "linux")]
+use crate::tun;
 
 const DEFAULT_SOCKS_PORT: u16 = 10808;
 const MAX_LOG_ENTRIES: usize = 1000;
@@ -208,6 +210,31 @@ impl XrayManager {
         let server_name = server.name.clone();
         let server_address = server.address.clone();
 
+        // TUN mode data (Linux only)
+        #[cfg(target_os = "linux")]
+        let tun_data = {
+            let exe = std::env::current_exe()
+                .map_err(|e| AppError::Config(format!("Failed to get exe path: {e}")))?;
+            let exe_dir = exe.parent().unwrap();
+            let sidecar_name = "hev-socks5-tunnel-x86_64-unknown-linux-gnu";
+            let path = exe_dir.join(sidecar_name);
+            let hev_bin = if path.exists() {
+                path
+            } else {
+                // Dev mode: try binaries directory
+                let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries")
+                    .join(sidecar_name);
+                if dev_path.exists() {
+                    dev_path
+                } else {
+                    warn!("hev-socks5-tunnel not found, TUN mode unavailable");
+                    path
+                }
+            };
+            (hev_bin, config_dir.clone(), server.address.clone(), bypass_subnet_list.clone())
+        };
+
         // Clone refs for post-connection verification
         let verify_logs = self.logs.clone();
         let verify_state = self.state.clone();
@@ -217,6 +244,8 @@ impl XrayManager {
         let started_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let started_flag_clone = started_flag.clone();
         let started_flag_verify = started_flag.clone();
+        #[cfg(target_os = "linux")]
+        let started_flag_tun = started_flag.clone();
 
         // Connection timeout: kill xray if not started within 15 seconds
         let timeout_state = self.state.clone();
@@ -469,6 +498,52 @@ impl XrayManager {
             }
         });
 
+        // Start TUN mode after xray connects (Linux only)
+        #[cfg(target_os = "linux")]
+        {
+            let (hev_bin, tun_config_dir, tun_server_ip, tun_bypass_subnets) = tun_data;
+            let tun_logs = self.logs.clone();
+            std::thread::spawn({
+                let tun_logs = tun_logs.clone();
+                let started = started_flag_tun.clone();
+                move || {
+                    // Wait for xray to connect
+                    for _ in 0..40 {
+                        if started.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    if !started.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+
+                    push_log_entry(&tun_logs, "info", "[tun] Starting TUN mode...");
+
+                    match tun::start_tun(
+                        &hev_bin,
+                        DEFAULT_SOCKS_PORT,
+                        &tun_server_ip,
+                        &tun_bypass_subnets,
+                        &tun_config_dir,
+                    ) {
+                        Ok(()) => {
+                            push_log_entry(&tun_logs, "info", "[tun] TUN mode started successfully");
+                            info!("[tun] TUN mode active — all traffic routed through VPN");
+                        }
+                        Err(e) => {
+                            push_log_entry(
+                                &tun_logs,
+                                "error",
+                                &format!("[tun] Failed to start TUN: {e}. Falling back to system proxy."),
+                            );
+                            error!("[tun] TUN start failed: {e}");
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -705,7 +780,21 @@ impl XrayManager {
 
     #[cfg(desktop)]
     fn stop_desktop(&self) -> Result<(), AppError> {
-        // Disable system proxy immediately
+        // Stop TUN mode first (Linux only) — must happen before killing xray
+        // so hev-socks5-tunnel can cleanly shut down while SOCKS5 is still available
+        #[cfg(target_os = "linux")]
+        {
+            let config_dir = self.config_path.lock().unwrap()
+                .as_ref()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            if let Some(ref dir) = config_dir {
+                if let Err(e) = tun::stop_tun(dir) {
+                    warn!("TUN cleanup error: {e}");
+                }
+            }
+        }
+
+        // Disable system proxy
         proxy::disable_system_proxy();
 
         // Kill the child process

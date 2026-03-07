@@ -6,6 +6,8 @@ pub mod network;
 #[cfg(desktop)]
 pub mod proxy;
 pub mod storage;
+#[cfg(target_os = "linux")]
+pub mod tun;
 #[cfg(desktop)]
 pub mod tray;
 pub mod uri;

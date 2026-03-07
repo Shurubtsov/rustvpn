@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustVPN",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "identifier": "com.rustvpn.app",
   "build": {
     "frontendDist": "../build",
@@ -34,7 +34,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/xray"
+      "binaries/xray",
+      "binaries/hev-socks5-tunnel"
     ]
   }
 }
