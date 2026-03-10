@@ -11,11 +11,20 @@ pub fn generate_client_config(
     bypass_subnets: &[String],
     send_through: Option<&str>,
 ) -> Result<String, AppError> {
-    // Use localhost + external DNS in all modes.
-    // In TUN mode, xray's own DNS queries to 1.1.1.1/8.8.8.8 are sent via
-    // sendThrough (bound to LOCAL_IP), so ip rule from LOCAL_IP lookup main
-    // routes them through the physical interface — no TUN loop.
-    let dns_servers: Vec<Value> = vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")];
+    // In TUN mode, skip localhost DNS entirely. The system resolver calls getaddrinfo()
+    // which goes through /etc/resolv.conf — corporate VPNs push their own DNS server
+    // there, and in TUN mode that DNS traffic may be unroutable, causing a 30-second
+    // hang per lookup that freezes every dispatch goroutine.
+    // Instead, use only 1.1.1.1/8.8.8.8: xray's own DNS queries use sendThrough
+    // (LOCAL_IP), so ip rule from LOCAL_IP lookup main routes them via the physical
+    // interface — no TUN loop.
+    //
+    // In proxy mode, include localhost first for local/corporate hostname resolution.
+    let dns_servers: Vec<Value> = if send_through.is_some() {
+        vec![json!("1.1.1.1"), json!("8.8.8.8")]
+    } else {
+        vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")]
+    };
 
     let mut config: Value = json!({
         "log": {
@@ -488,12 +497,24 @@ mod tests {
     }
 
     #[test]
-    fn test_config_tun_mode_dns_uses_external_servers() {
-        // In TUN mode, sendThrough + ip rule routes xray's own DNS queries via the
-        // physical interface, so using 1.1.1.1/8.8.8.8 is safe and avoids the
-        // corporate-VPN-pushed DNS server hanging issue.
+    fn test_config_tun_mode_dns_no_localhost() {
+        // In TUN mode, localhost DNS calls getaddrinfo() which uses the system resolver.
+        // Corporate VPNs push their own DNS server into /etc/resolv.conf, and in TUN mode
+        // that path may be broken — causing a 30s hang per lookup. Skip localhost entirely.
         let server = ServerConfig::default();
         let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.100")).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let dns = config["dns"]["servers"].as_array().unwrap();
+        assert_eq!(dns.len(), 2, "TUN mode must not include localhost DNS");
+        assert_eq!(dns[0], "1.1.1.1");
+        assert_eq!(dns[1], "8.8.8.8");
+    }
+
+    #[test]
+    fn test_config_proxy_mode_dns_includes_localhost() {
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
