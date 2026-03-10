@@ -158,9 +158,18 @@ impl XrayManager {
             *bd = bypass_domains.to_vec();
         }
 
+        // Detect physical interface gateway and IP (for TUN routing on Linux)
+        #[cfg(target_os = "linux")]
+        let gateway_info = network::detect_default_gateway_and_ip();
+
+        #[cfg(target_os = "linux")]
+        let send_through = gateway_info.as_ref().map(|(_, _, ip)| ip.as_str());
+        #[cfg(not(target_os = "linux"))]
+        let send_through: Option<&str> = None;
+
         // Generate xray config
         let config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list)?;
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list, send_through)?;
 
         // Write config to temp file
         let config_dir = app
@@ -232,7 +241,7 @@ impl XrayManager {
                     path
                 }
             };
-            (hev_bin, config_dir.clone(), server.address.clone(), bypass_subnet_list.clone())
+            (hev_bin, config_dir.clone(), server.address.clone(), bypass_subnet_list.clone(), gateway_info.clone())
         };
 
         // Clone refs for post-connection verification
@@ -254,7 +263,7 @@ impl XrayManager {
         let timeout_app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(15));
-            if !started_flag_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            if !started_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
                 let mut s = timeout_state.lock().unwrap();
                 if s.status == ConnectionStatus::Connecting {
                     warn!("Connection timeout after 15 seconds");
@@ -283,10 +292,10 @@ impl XrayManager {
                         info!("xray stdout: {}", trimmed);
                         push_log_entry(&logs_ref, "info", trimmed);
 
-                        if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
+                        if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
                         {
-                            started_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            started_flag.store(true, std::sync::atomic::Ordering::Release);
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
@@ -320,10 +329,10 @@ impl XrayManager {
                         };
                         push_log_entry(&logs_ref, level, trimmed);
 
-                        if !started_flag.load(std::sync::atomic::Ordering::Relaxed)
+                        if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
                         {
-                            started_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            started_flag.store(true, std::sync::atomic::Ordering::Release);
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
@@ -390,12 +399,12 @@ impl XrayManager {
         std::thread::spawn(move || {
             // Wait for connection to be established (up to 20s)
             for _ in 0..40 {
-                if started_flag_verify.load(std::sync::atomic::Ordering::Relaxed) {
+                if started_flag_verify.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
-            if !started_flag_verify.load(std::sync::atomic::Ordering::Relaxed) {
+            if !started_flag_verify.load(std::sync::atomic::Ordering::Acquire) {
                 return; // Timeout thread already handled this
             }
 
@@ -501,21 +510,59 @@ impl XrayManager {
         // Start TUN mode after xray connects (Linux only)
         #[cfg(target_os = "linux")]
         {
-            let (hev_bin, tun_config_dir, tun_server_ip, tun_bypass_subnets) = tun_data;
+            let (hev_bin, tun_config_dir, tun_server_ip, tun_bypass_subnets, tun_gateway_info) = tun_data;
             let tun_logs = self.logs.clone();
+            let tun_state = self.state.clone();
             std::thread::spawn({
                 let tun_logs = tun_logs.clone();
                 let started = started_flag_tun.clone();
                 move || {
                     // Wait for xray to connect
                     for _ in 0..40 {
-                        if started.load(std::sync::atomic::Ordering::Relaxed) {
+                        if started.load(std::sync::atomic::Ordering::Acquire) {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(500));
                     }
-                    if !started.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !started.load(std::sync::atomic::Ordering::Acquire) {
                         return;
+                    }
+
+                    // Verify SOCKS5 proxy is ready before starting TUN
+                    let socks_addr = format!("127.0.0.1:{DEFAULT_SOCKS_PORT}");
+                    let mut socks_ready = false;
+                    for attempt in 1..=6 {
+                        match std::net::TcpStream::connect_timeout(
+                            &socks_addr.parse().unwrap(),
+                            Duration::from_millis(500),
+                        ) {
+                            Ok(_) => {
+                                socks_ready = true;
+                                break;
+                            }
+                            Err(_) if attempt < 6 => {
+                                std::thread::sleep(Duration::from_millis(500));
+                            }
+                            Err(e) => {
+                                push_log_entry(
+                                    &tun_logs,
+                                    "error",
+                                    &format!("[tun] SOCKS5 proxy not ready after 3s: {e}. Skipping TUN."),
+                                );
+                            }
+                        }
+                    }
+                    if !socks_ready {
+                        return;
+                    }
+
+                    // Check connection status is still Connected before starting TUN
+                    {
+                        let state = tun_state.lock().unwrap();
+                        if state.status != ConnectionStatus::Connected {
+                            push_log_entry(&tun_logs, "warning", "[tun] Connection no longer active, skipping TUN start");
+                            return;
+                        }
                     }
 
                     push_log_entry(&tun_logs, "info", "[tun] Starting TUN mode...");
@@ -526,6 +573,7 @@ impl XrayManager {
                         &tun_server_ip,
                         &tun_bypass_subnets,
                         &tun_config_dir,
+                        tun_gateway_info,
                     ) {
                         Ok(()) => {
                             push_log_entry(&tun_logs, "info", "[tun] TUN mode started successfully");
@@ -558,7 +606,7 @@ impl XrayManager {
 
         // Generate xray config (no bypass subnets on mobile)
         let mut config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[])?;
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[], None)?;
 
         // Apply Android-specific modifications
         config_json = config::modify_config_for_android(&config_json)?;

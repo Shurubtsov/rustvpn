@@ -6,6 +6,17 @@ set -euo pipefail
 ACTION="${1:-}"
 shift || true
 
+# Validation helpers
+validate_ip() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid IP: $1" >&2; return 1; }
+}
+validate_iface() {
+  [[ "$1" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "Invalid interface: $1" >&2; return 1; }
+}
+validate_cidr() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || { echo "Invalid CIDR: $1" >&2; return 1; }
+}
+
 case "$ACTION" in
   start)
     HEV_BIN="$1"
@@ -19,7 +30,16 @@ case "$ACTION" in
     GATEWAY="$9"
     DEV="${10}"
     APP_PID="${11}"
-    shift 11
+    LOCAL_IP="${12}"
+    shift 12
+
+    # Validate critical arguments
+    validate_iface "$TUN_NAME" || exit 1
+    validate_ip "$TUN_GW" || exit 1
+    validate_ip "$SERVER_IP" || exit 1
+    validate_ip "$GATEWAY" || exit 1
+    validate_iface "$DEV" || exit 1
+    validate_ip "$LOCAL_IP" || exit 1
 
     # Start hev-socks5-tunnel in background
     "$HEV_BIN" "$HEV_CONFIG" &
@@ -36,13 +56,22 @@ case "$ACTION" in
     ip addr add "$TUN_ADDR" dev "$TUN_NAME" 2>/dev/null || true
     ip link set "$TUN_NAME" mtu "$TUN_MTU" up
 
+    # Source-based policy routing: xray binds outbound connections to LOCAL_IP
+    # (via sendThrough), so this rule routes them through the physical interface,
+    # bypassing the TUN default route and preventing routing loops.
+    ip rule add from "$LOCAL_IP" lookup main priority 100 2>/dev/null || true
+
     # Bypass route for VPN server (prevent routing loop)
     ip route add "${SERVER_IP}/32" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
 
-    # Bypass routes for additional subnets (passed as remaining args)
+    # Policy rules for additional subnets: let the main routing table handle them
+    # (preserves corporate VPN routes instead of overriding with our gateway)
     for SUBNET in "$@"; do
-      ip route add "$SUBNET" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
+      ip rule add to "$SUBNET" lookup main priority 99 2>/dev/null || true
     done
+
+    # Block IPv6 to prevent leaks during TUN mode
+    ip -6 route add unreachable default metric 1 2>/dev/null || true
 
     # Default route through TUN
     ip route add default via "$TUN_GW" dev "$TUN_NAME" metric 1
@@ -53,11 +82,15 @@ case "$ACTION" in
       while kill -0 "$APP_PID" 2>/dev/null && kill -0 "$HEV_PID" 2>/dev/null; do
         sleep 2
       done
-      # App or hev died — clean up
+      # App or hev died — clean up (order: kill hev → remove routes → remove rules → delete TUN)
       kill "$HEV_PID" 2>/dev/null || true
       sleep 0.5
       ip route del default via "$TUN_GW" dev "$TUN_NAME" 2>/dev/null || true
       ip route del "${SERVER_IP}/32" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
+      ip rule del from "$LOCAL_IP" lookup main priority 100 2>/dev/null || true
+      # Clean up bypass subnet rules
+      while ip rule del lookup main priority 99 2>/dev/null; do :; done
+      ip -6 route del unreachable default metric 1 2>/dev/null || true
       ip link del "$TUN_NAME" 2>/dev/null || true
       rm -f "$PID_FILE"
     ) &
@@ -70,22 +103,41 @@ case "$ACTION" in
     SERVER_IP="${4:-}"
     GATEWAY="${5:-}"
     DEV="${6:-}"
+    LOCAL_IP="${7:-}"
 
-    # Kill hev-socks5-tunnel
+    # Validate required arguments
+    validate_iface "$TUN_NAME" || exit 1
+    validate_ip "$TUN_GW" || exit 1
+
+    # Kill hev-socks5-tunnel first
     if [ -f "$PID_FILE" ]; then
       kill "$(cat "$PID_FILE")" 2>/dev/null || true
       rm -f "$PID_FILE"
     fi
     # Also kill any lingering hev processes for this TUN
     pkill -f "hev-socks5-tunnel" 2>/dev/null || true
+    sleep 0.5
+
+    # Remove TUN default route
+    ip route del default via "$TUN_GW" dev "$TUN_NAME" 2>/dev/null || true
+
+    # Remove source-based policy rule
+    if [ -n "$LOCAL_IP" ]; then
+      ip rule del from "$LOCAL_IP" lookup main priority 100 2>/dev/null || true
+    fi
+
+    # Remove bypass subnet policy rules
+    while ip rule del lookup main priority 99 2>/dev/null; do :; done
 
     # Remove bypass route for VPN server
     if [ -n "$SERVER_IP" ] && [ -n "$GATEWAY" ] && [ -n "$DEV" ]; then
       ip route del "${SERVER_IP}/32" via "$GATEWAY" dev "$DEV" 2>/dev/null || true
     fi
 
-    # Remove default route and TUN device
-    ip route del default via "$TUN_GW" dev "$TUN_NAME" 2>/dev/null || true
+    # Remove IPv6 leak prevention
+    ip -6 route del unreachable default metric 1 2>/dev/null || true
+
+    # Delete TUN device
     ip link del "$TUN_NAME" 2>/dev/null || true
     ;;
 

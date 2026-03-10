@@ -5,6 +5,20 @@ use log::{info, warn};
 
 use crate::models::AppError;
 
+/// Validate that a string looks like an IPv4 address (no shell metacharacters).
+fn is_valid_ip(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
+}
+
+/// Validate that a string looks like a safe interface name.
+fn is_valid_iface(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 const TUN_NAME: &str = "rvpn0";
 const TUN_ADDR: &str = "198.18.0.1/15";
 const TUN_GW: &str = "198.18.0.0";
@@ -36,22 +50,31 @@ pub fn cleanup_stale_tun(config_dir: &Path) {
             vec![h, "stop".to_string(), pid_file.to_string_lossy().to_string(),
                  TUN_NAME.to_string(), TUN_GW.to_string()]
         } else {
-            // No helper — build inline script
-            let script = format!(
-                "pkill -f hev-socks5-tunnel 2>/dev/null; \
-                 ip route del default via {TUN_GW} dev {TUN_NAME} 2>/dev/null; \
-                 ip link del {TUN_NAME} 2>/dev/null"
-            );
-            vec!["bash".to_string(), "-c".to_string(), script]
+            // No helper — use individual commands (avoids shell injection via bash -c)
+            let _ = Command::new("pkill").args(["-f", "hev-socks5-tunnel"]).output();
+            let _ = Command::new("ip").args(["rule", "del", "lookup", "main", "priority", "100"]).output();
+            let _ = Command::new("ip").args(["route", "del", "default", "via", TUN_GW, "dev", TUN_NAME]).output();
+            let _ = Command::new("ip").args(["link", "del", TUN_NAME]).output();
+            return;
         };
 
         if gw_file.exists() {
             if let Ok(contents) = std::fs::read_to_string(&gw_file) {
                 let lines: Vec<&str> = contents.lines().collect();
                 if lines.len() >= 3 {
-                    args.push(lines[0].to_string());
-                    args.push(lines[1].to_string());
-                    args.push(lines[2].to_string());
+                    let server_ip = lines[0];
+                    let gateway = lines[1];
+                    let dev = lines[2];
+                    if is_valid_ip(server_ip) && is_valid_ip(gateway) && is_valid_iface(dev) {
+                        args.push(server_ip.to_string());
+                        args.push(gateway.to_string());
+                        args.push(dev.to_string());
+                        if lines.len() >= 4 && is_valid_ip(lines[3]) {
+                            args.push(lines[3].to_string());
+                        }
+                    } else {
+                        warn!("Stale gateway file contains invalid data, skipping route cleanup");
+                    }
                 }
             }
             let _ = std::fs::remove_file(&gw_file);
@@ -93,9 +116,9 @@ fn resolve_helper() -> Result<String, AppError> {
         return Ok(dev_path.to_string_lossy().to_string());
     }
 
-    Err(AppError::Config(format!(
-        "rustvpn-helper not found. Run: sudo ./scripts/install-helper.sh"
-    )))
+    Err(AppError::Config(
+        "rustvpn-helper not found. Run: sudo ./scripts/install-helper.sh".to_string(),
+    ))
 }
 
 /// Start TUN mode: write hev config, start hev-socks5-tunnel via pkexec helper, set up routes.
@@ -105,23 +128,40 @@ pub fn start_tun(
     server_ip: &str,
     bypass_subnets: &[String],
     config_dir: &Path,
+    gateway_info: Option<(String, String, String)>,
 ) -> Result<(), AppError> {
     let helper = resolve_helper()?;
 
-    // Detect current default gateway before we change routes
-    let (gateway, dev) = detect_default_gateway()?;
-    info!("Detected default gateway: {gateway} via {dev}");
+    // Use pre-detected gateway info or detect now
+    let (gateway, dev, local_ip) = match gateway_info {
+        Some(info) => info,
+        None => {
+            let (gw, d) = detect_default_gateway()?;
+            // Fallback: detect IP from the device
+            let ip = crate::network::detect_default_gateway_and_ip()
+                .map(|(_, _, ip)| ip)
+                .unwrap_or_default();
+            (gw, d, ip)
+        }
+    };
+
+    if local_ip.is_empty() {
+        return Err(AppError::Config(
+            "Failed to detect local IP address for TUN routing. Cannot start TUN mode.".into(),
+        ));
+    }
+    info!("Detected default gateway: {gateway} via {dev} (local IP: {local_ip})");
 
     // Write hev-socks5-tunnel config
     let hev_config = config_dir.join("hev_config.yml");
     let pid_file = config_dir.join("hev.pid");
     write_hev_config(&hev_config, socks_port, &pid_file)?;
 
-    // Save gateway info for stop_tun
+    // Save gateway info for stop_tun (including local_ip for ip rule cleanup)
     let gw_file = config_dir.join("tun_gateway.txt");
-    std::fs::write(&gw_file, format!("{server_ip}\n{gateway}\n{dev}"))?;
+    std::fs::write(&gw_file, format!("{server_ip}\n{gateway}\n{dev}\n{local_ip}"))?;
 
-    // Build args for helper (includes app PID for watchdog)
+    // Build args for helper (includes app PID for watchdog and local IP for routing)
     let app_pid = std::process::id().to_string();
     let mut args = vec![
         helper.clone(),
@@ -137,6 +177,7 @@ pub fn start_tun(
         gateway.clone(),
         dev.clone(),
         app_pid,
+        local_ip,
     ];
 
     // Append bypass subnets as additional args
@@ -156,6 +197,8 @@ pub fn start_tun(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clean up gateway file on failure so stop_tun doesn't use stale data
+        let _ = std::fs::remove_file(&gw_file);
         return Err(AppError::XrayProcess(format!(
             "TUN setup failed: {stderr}"
         )));
@@ -190,14 +233,25 @@ pub fn stop_tun(config_dir: &Path) -> Result<(), AppError> {
         TUN_GW.to_string(),
     ];
 
-    // Read saved gateway info for bypass route cleanup
+    // Read saved gateway info for bypass route and ip rule cleanup
     if gw_file.exists() {
         if let Ok(contents) = std::fs::read_to_string(&gw_file) {
             let lines: Vec<&str> = contents.lines().collect();
             if lines.len() >= 3 {
-                args.push(lines[0].to_string()); // server_ip
-                args.push(lines[1].to_string()); // gateway
-                args.push(lines[2].to_string()); // dev
+                let server_ip = lines[0];
+                let gateway = lines[1];
+                let dev = lines[2];
+                // Validate all values before passing to privileged helper
+                if is_valid_ip(server_ip) && is_valid_ip(gateway) && is_valid_iface(dev) {
+                    args.push(server_ip.to_string());
+                    args.push(gateway.to_string());
+                    args.push(dev.to_string());
+                    if lines.len() >= 4 && is_valid_ip(lines[3]) {
+                        args.push(lines[3].to_string()); // local_ip
+                    }
+                } else {
+                    warn!("Gateway file contains invalid data, skipping route cleanup");
+                }
             }
         }
         let _ = std::fs::remove_file(&gw_file);

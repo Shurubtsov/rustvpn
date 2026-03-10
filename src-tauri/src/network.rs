@@ -69,10 +69,79 @@ pub fn collect_bypass_subnets(vpns: &[DetectedVpn]) -> Vec<String> {
     result
 }
 
+/// Detect default gateway (preferring physical interfaces) and the local IP of that interface.
+/// Returns (gateway_ip, device_name, local_ip).
+pub fn detect_default_gateway_and_ip() -> Option<(String, String, String)> {
+    // Get default route
+    let route_out = Command::new("ip")
+        .args(["-j", "route", "show", "default"])
+        .output()
+        .ok()?;
+    if !route_out.status.success() {
+        return None;
+    }
+    let routes: Vec<IpRoute> = serde_json::from_slice(&route_out.stdout).ok()?;
+
+    // Find physical (non-VPN, non-virtual) default route
+    let (gw, dev) = routes
+        .iter()
+        .filter_map(|r| {
+            let gw = r.gateway.as_deref()?;
+            let dev = r.dev.as_deref()?;
+            if !is_vpn_interface(dev) && !is_virtual_interface(dev) {
+                Some((gw.to_string(), dev.to_string()))
+            } else {
+                None
+            }
+        })
+        .next()
+        .or_else(|| {
+            routes.iter().filter_map(|r| {
+                let gw = r.gateway.as_deref()?;
+                let dev = r.dev.as_deref()?;
+                Some((gw.to_string(), dev.to_string()))
+            }).next()
+        })?;
+
+    // Get IP address of that interface
+    let addr_out = Command::new("ip")
+        .args(["-j", "-4", "addr", "show", "dev", &dev])
+        .output()
+        .ok()?;
+    if !addr_out.status.success() {
+        return None;
+    }
+    let addr_json: serde_json::Value = serde_json::from_slice(&addr_out.stdout).ok()?;
+    let local_ip = addr_json
+        .as_array()?
+        .first()?
+        .get("addr_info")?
+        .as_array()?
+        .iter()
+        .filter_map(|info| info.get("local")?.as_str())
+        .find(|ip| !is_link_local(ip))?
+        .to_string();
+
+    info!("Detected physical gateway: {gw} via {dev} (local IP: {local_ip})");
+    Some((gw, dev, local_ip))
+}
+
 /// Check whether an interface name looks like a VPN interface.
 pub fn is_vpn_interface(name: &str) -> bool {
     let prefixes = ["tun", "tap", "wg", "ppp", "nordlynx", "tailscale"];
     prefixes.iter().any(|p| name.starts_with(p))
+}
+
+/// Check whether an interface name looks like a virtual/container interface
+/// (Docker, libvirt, etc.) that should be skipped for gateway detection.
+pub fn is_virtual_interface(name: &str) -> bool {
+    let prefixes = ["docker", "br-", "veth", "virbr", "lxc", "podman"];
+    prefixes.iter().any(|p| name.starts_with(p))
+}
+
+/// Check whether an IP address is link-local (169.254.x.x).
+fn is_link_local(ip: &str) -> bool {
+    ip.starts_with("169.254.")
 }
 
 /// Pure function: parse `ip -j route show` JSON output into detected VPNs.
@@ -347,6 +416,21 @@ mod tests {
     fn test_invalid_json() {
         let vpns = parse_routes_json("not json at all");
         assert!(vpns.is_empty());
+    }
+
+    #[test]
+    fn test_is_virtual_interface() {
+        assert!(is_virtual_interface("docker0"));
+        assert!(is_virtual_interface("br-abc123"));
+        assert!(is_virtual_interface("veth12345"));
+        assert!(is_virtual_interface("virbr0"));
+        assert!(is_virtual_interface("lxcbr0"));
+
+        assert!(!is_virtual_interface("eth0"));
+        assert!(!is_virtual_interface("wlp2s0"));
+        assert!(!is_virtual_interface("enp3s0"));
+        assert!(!is_virtual_interface("lo"));
+        assert!(!is_virtual_interface("tun0"));
     }
 
     #[test]

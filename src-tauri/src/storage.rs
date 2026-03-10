@@ -35,7 +35,8 @@ pub fn save_servers<R: Runtime>(
         fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(servers)?;
-    fs::write(&path, data)?;
+    fs::write(&path, &data)?;
+    set_restrictive_permissions(&path);
     Ok(())
 }
 
@@ -53,8 +54,14 @@ pub fn load_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, AppE
         return Ok(AppSettings::default());
     }
     let data = fs::read_to_string(&path)?;
-    let settings: AppSettings = serde_json::from_str(&data)?;
-    Ok(settings)
+    match serde_json::from_str::<AppSettings>(&data) {
+        Ok(settings) => Ok(settings),
+        Err(e) => {
+            log::warn!("Corrupted settings.json, resetting to defaults: {e}");
+            let _ = fs::remove_file(&path);
+            Ok(AppSettings::default())
+        }
+    }
 }
 
 pub fn save_settings<R: Runtime>(
@@ -66,6 +73,17 @@ pub fn save_settings<R: Runtime>(
         fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(settings)?;
-    fs::write(&path, data)?;
+    fs::write(&path, &data)?;
+    set_restrictive_permissions(&path);
     Ok(())
 }
+
+/// Set file permissions to 0o600 (owner read/write only) on Unix.
+#[cfg(unix)]
+fn set_restrictive_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn set_restrictive_permissions(_path: &std::path::Path) {}

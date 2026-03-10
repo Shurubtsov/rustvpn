@@ -9,16 +9,22 @@ pub fn generate_client_config(
     socks_port: u16,
     bypass_domains: &[String],
     bypass_subnets: &[String],
+    send_through: Option<&str>,
 ) -> Result<String, AppError> {
+    // In TUN mode (send_through set), use only localhost DNS to avoid routing loops
+    // where DNS queries to 1.1.1.1/8.8.8.8 go through the TUN back to xray.
+    let dns_servers: Vec<Value> = if send_through.is_some() {
+        vec![json!("localhost")]
+    } else {
+        vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")]
+    };
+
     let mut config: Value = json!({
         "log": {
             "loglevel": "info"
         },
         "dns": {
-            "servers": [
-                "1.1.1.1",
-                "8.8.8.8"
-            ]
+            "servers": dns_servers
         },
         "stats": {},
         "api": {
@@ -103,6 +109,23 @@ pub fn generate_client_config(
         }
     });
 
+    // On Linux with TUN mode, bind outbound connections to the physical interface IP
+    // so that `ip rule add from <local_ip> lookup main` routes them through the
+    // physical interface, bypassing the TUN default route and preventing loops.
+    if let Some(local_ip) = send_through {
+        if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+            for outbound in outbounds.iter_mut() {
+                let tag = outbound.get("tag").and_then(|t| t.as_str()).unwrap_or("");
+                if tag == "proxy" || tag == "direct" {
+                    outbound
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("sendThrough".to_string(), json!(local_ip));
+                }
+            }
+        }
+    }
+
     // Build routing rules dynamically
     let rules = config["routing"]["rules"].as_array_mut().unwrap();
 
@@ -142,6 +165,18 @@ pub fn generate_client_config(
         "::1/128".to_string(),
         "fc00::/7".to_string(),
     ];
+
+    // Defense-in-depth: route VPN server IP directly (alongside helper's ip route add)
+    if !server.address.is_empty() {
+        let server_cidr = if server.address.contains('/') {
+            server.address.clone()
+        } else {
+            format!("{}/32", server.address)
+        };
+        if !direct_ips.contains(&server_cidr) {
+            direct_ips.push(server_cidr);
+        }
+    }
     for subnet in bypass_subnets {
         let s = subnet.trim();
         if !s.is_empty() && !direct_ips.contains(&s.to_string()) {
@@ -220,7 +255,7 @@ mod tests {
             },
         };
 
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         // Verify inbound
@@ -248,15 +283,17 @@ mod tests {
         assert_eq!(reality["serverName"], "www.microsoft.com");
         assert_eq!(reality["fingerprint"], "chrome");
 
-        // Verify DNS
-        assert_eq!(config["dns"]["servers"][0], "1.1.1.1");
-        assert_eq!(config["dns"]["servers"][1], "8.8.8.8");
+        // Verify DNS (proxy-only mode includes external servers)
+        let dns = config["dns"]["servers"].as_array().unwrap();
+        assert_eq!(dns[0], "localhost");
+        assert_eq!(dns[1], "1.1.1.1");
+        assert_eq!(dns[2], "8.8.8.8");
     }
 
     #[test]
     fn test_config_custom_socks_port() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 1080, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 1080, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert_eq!(config["inbounds"][0]["port"], 1080);
@@ -265,7 +302,7 @@ mod tests {
     #[test]
     fn test_config_has_required_outbounds() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let outbounds = config["outbounds"].as_array().unwrap();
@@ -284,7 +321,7 @@ mod tests {
     #[test]
     fn test_config_reality_security() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let stream = &config["outbounds"][0]["streamSettings"];
@@ -296,7 +333,7 @@ mod tests {
     #[test]
     fn test_config_encryption_is_none() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let user = &config["outbounds"][0]["settings"]["vnext"][0]["users"][0];
@@ -306,7 +343,7 @@ mod tests {
     #[test]
     fn test_config_routing_rules() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert_eq!(config["routing"]["domainStrategy"], "IPIfNonMatch");
@@ -324,7 +361,7 @@ mod tests {
     #[test]
     fn test_config_sniffing_enabled() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let sniffing = &config["inbounds"][0]["sniffing"];
@@ -350,7 +387,7 @@ mod tests {
                 fingerprint: "chrome".to_string(),
             },
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let parsed: Result<Value, _> = serde_json::from_str(&config_str);
         assert!(
             parsed.is_ok(),
@@ -369,7 +406,7 @@ mod tests {
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let vnext = &config["outbounds"][0]["settings"]["vnext"][0];
@@ -397,7 +434,7 @@ mod tests {
                 fingerprint: "safari".to_string(),
             },
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let reality = &config["outbounds"][0]["streamSettings"]["realitySettings"];
@@ -410,7 +447,7 @@ mod tests {
     #[test]
     fn test_config_has_stats_section() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert!(
@@ -422,7 +459,7 @@ mod tests {
     #[test]
     fn test_config_has_api_section() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let api = &config["api"];
@@ -436,7 +473,7 @@ mod tests {
     fn test_config_with_vpn_bypass_subnets() {
         let server = ServerConfig::default();
         let bypass_subnets = vec!["10.8.0.0/24".to_string(), "172.20.0.0/16".to_string()];
-        let config_str = generate_client_config(&server, 10808, &[], &bypass_subnets).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &bypass_subnets, None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let rules = config["routing"]["rules"].as_array().unwrap();
@@ -451,9 +488,54 @@ mod tests {
     }
 
     #[test]
+    fn test_config_tun_mode_dns_only_localhost() {
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.100")).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let dns = config["dns"]["servers"].as_array().unwrap();
+        assert_eq!(dns.len(), 1, "TUN mode should only use localhost DNS");
+        assert_eq!(dns[0], "localhost");
+    }
+
+    #[test]
+    fn test_config_server_ip_in_direct_rules() {
+        let server = ServerConfig {
+            id: "test-server-ip-direct".to_string(),
+            name: "S".to_string(),
+            address: "45.151.233.107".to_string(),
+            port: 443,
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            flow: "xtls-rprx-vision".to_string(),
+            reality: RealitySettings::default(),
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let rules = config["routing"]["rules"].as_array().unwrap();
+        let ip_rule = rules.iter().find(|r| r.get("ip").is_some()).unwrap();
+        let ips = ip_rule["ip"].as_array().unwrap();
+        assert!(ips.contains(&Value::String("45.151.233.107/32".to_string())),
+            "Server IP should be in direct routing rules");
+    }
+
+    #[test]
+    fn test_config_send_through_sets_outbounds() {
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.50")).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let outbounds = config["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds[0]["sendThrough"], "192.168.1.50");
+        assert_eq!(outbounds[1]["sendThrough"], "192.168.1.50");
+        // block outbound should NOT have sendThrough
+        assert!(outbounds[2].get("sendThrough").is_none());
+    }
+
+    #[test]
     fn test_config_has_stats_policy() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[]).unwrap();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let system = &config["policy"]["system"];

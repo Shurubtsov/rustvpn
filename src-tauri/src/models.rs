@@ -152,8 +152,18 @@ pub struct DetectedVpn {
 pub struct AppSettings {
     pub auto_connect: bool,
     pub last_server_id: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_bypass_domains")]
     pub bypass_domains: Vec<String>,
+}
+
+fn default_bypass_domains() -> Vec<String> {
+    vec![
+        "claude.ai".to_string(),
+        "anthropic.com".to_string(),
+        "api.anthropic.com".to_string(),
+        "wb.ru".to_string(),
+        "wildberries.ru".to_string(),
+    ]
 }
 
 impl Default for AppSettings {
@@ -161,13 +171,7 @@ impl Default for AppSettings {
         Self {
             auto_connect: false,
             last_server_id: None,
-            bypass_domains: vec![
-                "claude.ai".to_string(),
-                "anthropic.com".to_string(),
-                "api.anthropic.com".to_string(),
-                "wb.ru".to_string(),
-                "wildberries.ru".to_string(),
-            ],
+            bypass_domains: default_bypass_domains(),
         }
     }
 }
