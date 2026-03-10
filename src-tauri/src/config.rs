@@ -11,13 +11,11 @@ pub fn generate_client_config(
     bypass_subnets: &[String],
     send_through: Option<&str>,
 ) -> Result<String, AppError> {
-    // In TUN mode (send_through set), use only localhost DNS to avoid routing loops
-    // where DNS queries to 1.1.1.1/8.8.8.8 go through the TUN back to xray.
-    let dns_servers: Vec<Value> = if send_through.is_some() {
-        vec![json!("localhost")]
-    } else {
-        vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")]
-    };
+    // Use localhost + external DNS in all modes.
+    // In TUN mode, xray's own DNS queries to 1.1.1.1/8.8.8.8 are sent via
+    // sendThrough (bound to LOCAL_IP), so ip rule from LOCAL_IP lookup main
+    // routes them through the physical interface — no TUN loop.
+    let dns_servers: Vec<Value> = vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")];
 
     let mut config: Value = json!({
         "log": {
@@ -156,14 +154,16 @@ pub fn generate_client_config(
         "domain": ["localhost"]
     }));
 
-    // Private IPs + detected VPN subnets → direct
+    // Private IPs + multicast + detected VPN subnets → direct
     let mut direct_ips = vec![
         "127.0.0.0/8".to_string(),
         "10.0.0.0/8".to_string(),
         "172.16.0.0/12".to_string(),
         "192.168.0.0/16".to_string(),
+        "224.0.0.0/4".to_string(),   // IPv4 multicast (mDNS, SSDP, etc.) — never proxy
         "::1/128".to_string(),
         "fc00::/7".to_string(),
+        "ff00::/8".to_string(),       // IPv6 multicast
     ];
 
     // Defense-in-depth: route VPN server IP directly (alongside helper's ip route add)
@@ -488,14 +488,18 @@ mod tests {
     }
 
     #[test]
-    fn test_config_tun_mode_dns_only_localhost() {
+    fn test_config_tun_mode_dns_uses_external_servers() {
+        // In TUN mode, sendThrough + ip rule routes xray's own DNS queries via the
+        // physical interface, so using 1.1.1.1/8.8.8.8 is safe and avoids the
+        // corporate-VPN-pushed DNS server hanging issue.
         let server = ServerConfig::default();
         let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.100")).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
-        assert_eq!(dns.len(), 1, "TUN mode should only use localhost DNS");
         assert_eq!(dns[0], "localhost");
+        assert_eq!(dns[1], "1.1.1.1");
+        assert_eq!(dns[2], "8.8.8.8");
     }
 
     #[test]
