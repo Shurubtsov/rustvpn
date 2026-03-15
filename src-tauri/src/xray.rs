@@ -138,7 +138,7 @@ impl XrayManager {
             }
         }
 
-        // Detect corporate VPN interfaces and collect bypass subnets
+        // Detect corporate VPN interfaces and bypass subnets
         let vpns = network::detect_vpn_routes();
         let bypass_subnet_list = network::collect_bypass_subnets(&vpns);
 
@@ -167,9 +167,28 @@ impl XrayManager {
         #[cfg(not(target_os = "linux"))]
         let send_through: Option<&str> = None;
 
+        // Detect corporate VPN DNS servers from resolv.conf (private IPs only).
+        // Filter out DNS servers inside VPN-routed subnets — xray can't reach them
+        // correctly with sendThrough (wrong source IP). Only LAN-reachable DNS
+        // (e.g. home router) survives. With the direct-vpn outbound (no sendThrough),
+        // DNS to private IPs is routed via `ip rule to SUBNET lookup main`, using
+        // the correct VPN-assigned source IP.
+        #[cfg(target_os = "linux")]
+        let vpn_dns_servers = if !bypass_subnet_list.is_empty() {
+            let detected = network::detect_vpn_dns_servers();
+            if !detected.is_empty() {
+                info!("Detected corporate VPN DNS servers: {:?}", detected);
+            }
+            detected
+        } else {
+            Vec::new()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let vpn_dns_servers: Vec<String> = Vec::new();
+
         // Generate xray config
         let config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list, send_through)?;
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list, send_through, &vpn_dns_servers)?;
 
         // Write config to temp file
         let config_dir = app
@@ -606,7 +625,7 @@ impl XrayManager {
 
         // Generate xray config (no bypass subnets on mobile)
         let mut config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[], None)?;
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[], None, &[])?;
 
         // Apply Android-specific modifications
         config_json = config::modify_config_for_android(&config_json)?;

@@ -55,7 +55,14 @@ pub fn load_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, AppE
     }
     let data = fs::read_to_string(&path)?;
     match serde_json::from_str::<AppSettings>(&data) {
-        Ok(settings) => Ok(settings),
+        Ok(mut settings) => {
+            // Migrate: bypass_domains was added later; if saved as empty (e.g. from an older
+            // version that stored the field as []), restore defaults so corporate domains work.
+            if settings.bypass_domains.is_empty() {
+                settings.bypass_domains = AppSettings::default().bypass_domains;
+            }
+            Ok(settings)
+        }
         Err(e) => {
             log::warn!("Corrupted settings.json, resetting to defaults: {e}");
             let _ = fs::remove_file(&path);

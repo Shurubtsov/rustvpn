@@ -17,6 +17,21 @@ validate_cidr() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || { echo "Invalid CIDR: $1" >&2; return 1; }
 }
 
+# Restore DNS configuration after TUN teardown.
+# NetworkManager may have recalculated DNS while our TUN device existed,
+# dropping corporate VPN nameservers from /etc/resolv.conf.
+restore_dns() {
+  local backup="$1"
+  if [ -f "$backup" ]; then
+    cp "$backup" /etc/resolv.conf 2>/dev/null || true
+    rm -f "$backup"
+  fi
+  # Ask NetworkManager to reapply DNS from active connections
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli general reload dns-full 2>/dev/null || nmcli general reload 2>/dev/null || true
+  fi
+}
+
 case "$ACTION" in
   start)
     HEV_BIN="$1"
@@ -41,6 +56,10 @@ case "$ACTION" in
     validate_iface "$DEV" || exit 1
     validate_ip "$LOCAL_IP" || exit 1
 
+    # Save resolv.conf before any routing changes as a safety net.
+    RESOLV_BACKUP="${PID_FILE%.pid}_resolv.conf.bak"
+    cp /etc/resolv.conf "$RESOLV_BACKUP" 2>/dev/null || true
+
     # Start hev-socks5-tunnel in background
     "$HEV_BIN" "$HEV_CONFIG" &
     HEV_PID=$!
@@ -51,6 +70,13 @@ case "$ACTION" in
       ip link show "$TUN_NAME" >/dev/null 2>&1 && break
       sleep 0.1
     done
+
+    # Tell NetworkManager to ignore our TUN device. Without this, NM sees the
+    # new interface and recalculates routing/DNS for ALL connections — corrupting
+    # corporate VPN routes and dropping its DNS servers from /etc/resolv.conf.
+    if command -v nmcli >/dev/null 2>&1; then
+      nmcli device set "$TUN_NAME" managed no 2>/dev/null || true
+    fi
 
     # Configure TUN device
     ip addr add "$TUN_ADDR" dev "$TUN_NAME" 2>/dev/null || true
@@ -93,6 +119,8 @@ case "$ACTION" in
       ip -6 route del unreachable default metric 1 2>/dev/null || true
       ip link del "$TUN_NAME" 2>/dev/null || true
       rm -f "$PID_FILE"
+      # Restore DNS after TUN cleanup
+      restore_dns "$RESOLV_BACKUP"
     ) &
     ;;
 
@@ -139,6 +167,11 @@ case "$ACTION" in
 
     # Delete TUN device
     ip link del "$TUN_NAME" 2>/dev/null || true
+
+    # Restore DNS — NetworkManager may have corrupted resolv.conf when it saw
+    # our TUN device appear/disappear, dropping corporate VPN DNS servers.
+    RESOLV_BACKUP="${PID_FILE%.pid}_resolv.conf.bak"
+    restore_dns "$RESOLV_BACKUP"
     ;;
 
   *)
