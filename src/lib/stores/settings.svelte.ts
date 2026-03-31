@@ -8,8 +8,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 	dpi_bypass: {
 		enabled: true,
 		packets: 'tlshello',
-		length: '100-200',
-		interval: '10-20'
+		length: '1-3',
+		interval: '1-3'
 	}
 };
 

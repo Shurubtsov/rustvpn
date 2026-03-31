@@ -161,8 +161,8 @@ impl Default for DpiBypassSettings {
         Self {
             enabled: true,
             packets: "tlshello".to_string(),
-            length: "100-200".to_string(),
-            interval: "10-20".to_string(),
+            length: "1-3".to_string(),
+            interval: "1-3".to_string(),
         }
     }
 }

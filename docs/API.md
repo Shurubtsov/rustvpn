@@ -34,8 +34,8 @@ export interface DetectedVpn {
 export interface DpiBypassSettings {
   enabled: boolean;    // Whether TLS ClientHello fragmentation is active (default: true)
   packets: string;     // Which packets to fragment ("tlshello")
-  length: string;      // Fragment size range in bytes ("100-200")
-  interval: string;    // Delay between fragments in ms ("10-20")
+  length: string;      // Fragment size range in bytes ("1-3")
+  interval: string;    // Delay between fragments in ms ("1-3")
 }
 
 export interface AppSettings {
