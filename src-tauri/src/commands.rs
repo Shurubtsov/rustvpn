@@ -17,7 +17,12 @@ pub fn connect<R: Runtime>(
     server_config.validate()?;
     let settings = storage::load_settings(&app).unwrap_or_default();
     manager
-        .start(&app, &server_config, &settings.bypass_domains)
+        .start(
+            &app,
+            &server_config,
+            &settings.bypass_domains,
+            &settings.dpi_bypass,
+        )
         .map_err(|e| e.to_string())?;
 
     // Save last server id for auto-connect and tray reconnect

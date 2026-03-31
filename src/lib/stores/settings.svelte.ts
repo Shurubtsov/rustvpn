@@ -4,7 +4,13 @@ import type { AppSettings } from '$lib/types';
 const DEFAULT_SETTINGS: AppSettings = {
 	auto_connect: false,
 	last_server_id: null,
-	bypass_domains: ['claude.ai', 'anthropic.com', 'api.anthropic.com', 'wb.ru', 'wildberries.ru']
+	bypass_domains: ['claude.ai', 'anthropic.com', 'api.anthropic.com', 'wb.ru', 'wildberries.ru'],
+	dpi_bypass: {
+		enabled: true,
+		packets: 'tlshello',
+		length: '100-200',
+		interval: '10-20'
+	}
 };
 
 function createSettingsStore() {
@@ -39,6 +45,18 @@ function createSettingsStore() {
 		}
 	}
 
+	async function setDpiBypass(enabled: boolean) {
+		settings = {
+			...settings,
+			dpi_bypass: { ...settings.dpi_bypass, enabled }
+		};
+		try {
+			await updateSettings(settings);
+		} catch {
+			// Ignore save errors
+		}
+	}
+
 	return {
 		get settings() {
 			return settings;
@@ -48,7 +66,8 @@ function createSettingsStore() {
 		},
 		load,
 		setAutoConnect,
-		setBypassDomains
+		setBypassDomains,
+		setDpiBypass
 	};
 }
 

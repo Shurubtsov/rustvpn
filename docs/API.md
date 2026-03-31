@@ -31,6 +31,20 @@ export interface DetectedVpn {
   server_ip: string | null; // VPN server endpoint IP if detected
 }
 
+export interface DpiBypassSettings {
+  enabled: boolean;    // Whether TLS ClientHello fragmentation is active (default: true)
+  packets: string;     // Which packets to fragment ("tlshello")
+  length: string;      // Fragment size range in bytes ("100-200")
+  interval: string;    // Delay between fragments in ms ("10-20")
+}
+
+export interface AppSettings {
+  auto_connect: boolean;
+  last_server_id: string | null;
+  bypass_domains: string[];
+  dpi_bypass: DpiBypassSettings;  // DPI bypass settings (enabled by default)
+}
+
 export type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -85,7 +99,7 @@ export async function connect(config: ServerConfig): Promise<void>
 - `"Failed to create sidecar command: ..."` — xray binary not found in bundles
 - `"Failed to spawn xray: ..."` — OS process spawn failure
 
-**Behavior:** Sets status to `connecting`, generates the xray JSON config, writes it to disk, and spawns xray. Status transitions to `connected` asynchronously when xray logs `"started"` to stderr.
+**Behavior:** Sets status to `connecting`, reads `AppSettings` (including `dpi_bypass`), generates the xray JSON config (with `sockopt.fragment` if DPI bypass is enabled), writes it to disk, and spawns xray. Status transitions to `connected` asynchronously when xray logs `"started"` to stderr.
 
 ---
 

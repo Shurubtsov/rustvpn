@@ -6,10 +6,10 @@ pub mod network;
 #[cfg(desktop)]
 pub mod proxy;
 pub mod storage;
-#[cfg(target_os = "linux")]
-pub mod tun;
 #[cfg(desktop)]
 pub mod tray;
+#[cfg(target_os = "linux")]
+pub mod tun;
 pub mod uri;
 pub mod xray;
 
@@ -37,7 +37,10 @@ pub fn run() {
             // Clean up stale TUN from previous crash (Linux only)
             #[cfg(target_os = "linux")]
             {
-                let config_dir = app.handle().path().app_data_dir()
+                let config_dir = app
+                    .handle()
+                    .path()
+                    .app_data_dir()
                     .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
                 tun::cleanup_stale_tun(&config_dir);
             }
@@ -69,7 +72,12 @@ pub fn run() {
                     if let Ok(servers) = storage::load_servers(&handle) {
                         if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
                             let manager = app.state::<XrayManager>();
-                            if let Err(e) = manager.start(&handle, server, &settings.bypass_domains) {
+                            if let Err(e) = manager.start(
+                                &handle,
+                                server,
+                                &settings.bypass_domains,
+                                &settings.dpi_bypass,
+                            ) {
                                 log::warn!("Auto-connect failed: {e}");
                             }
                         }

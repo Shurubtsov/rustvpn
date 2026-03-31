@@ -13,7 +13,8 @@ use tauri_plugin_shell::ShellExt;
 use crate::config;
 use crate::config::generate_client_config;
 use crate::models::{
-    AppError, ConnectionInfo, ConnectionStatus, DetectedVpn, LogEntry, ServerConfig, SpeedStats,
+    AppError, ConnectionInfo, ConnectionStatus, DetectedVpn, DpiBypassSettings, LogEntry,
+    ServerConfig, SpeedStats,
 };
 #[cfg(desktop)]
 use crate::network;
@@ -90,6 +91,7 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
+        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         // Don't start if already running
         {
@@ -111,12 +113,12 @@ impl XrayManager {
 
         #[cfg(desktop)]
         {
-            self.start_desktop(app, server, bypass_domains)?;
+            self.start_desktop(app, server, bypass_domains, dpi_bypass)?;
         }
 
         #[cfg(mobile)]
         {
-            self.start_mobile(app, server, bypass_domains)?;
+            self.start_mobile(app, server, bypass_domains, dpi_bypass)?;
         }
 
         Ok(())
@@ -128,6 +130,7 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
+        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         // Kill any stale xray process from a previous run
         {
@@ -187,8 +190,15 @@ impl XrayManager {
         let vpn_dns_servers: Vec<String> = Vec::new();
 
         // Generate xray config
-        let config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &bypass_subnet_list, send_through, &vpn_dns_servers)?;
+        let config_json = generate_client_config(
+            server,
+            DEFAULT_SOCKS_PORT,
+            bypass_domains,
+            &bypass_subnet_list,
+            send_through,
+            &vpn_dns_servers,
+            dpi_bypass,
+        )?;
 
         // Write config to temp file
         let config_dir = app
@@ -260,7 +270,13 @@ impl XrayManager {
                     path
                 }
             };
-            (hev_bin, config_dir.clone(), server.address.clone(), bypass_subnet_list.clone(), gateway_info.clone())
+            (
+                hev_bin,
+                config_dir.clone(),
+                server.address.clone(),
+                bypass_subnet_list.clone(),
+                gateway_info.clone(),
+            )
         };
 
         // Clone refs for post-connection verification
@@ -286,10 +302,15 @@ impl XrayManager {
                 let mut s = timeout_state.lock().unwrap();
                 if s.status == ConnectionStatus::Connecting {
                     warn!("Connection timeout after 15 seconds");
-                    push_log_entry(&timeout_logs, "error", "Connection timeout after 15 seconds");
+                    push_log_entry(
+                        &timeout_logs,
+                        "error",
+                        "Connection timeout after 15 seconds",
+                    );
                     s.status = ConnectionStatus::Error;
-                    s.error_message =
-                        Some("Connection timeout — server unreachable or config invalid".to_string());
+                    s.error_message = Some(
+                        "Connection timeout — server unreachable or config invalid".to_string(),
+                    );
                     s.connected_since = None;
                     drop(s);
                     // Kill the xray process
@@ -328,7 +349,11 @@ impl XrayManager {
                                 s.server_address = Some(server_address.clone());
                                 s.error_message = None;
                                 info!("xray connected successfully (detected from stdout)");
-                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &bypass_ref.lock().unwrap(), &bypass_subnets_ref.lock().unwrap());
+                                proxy::enable_system_proxy(
+                                    DEFAULT_SOCKS_PORT,
+                                    &bypass_ref.lock().unwrap(),
+                                    &bypass_subnets_ref.lock().unwrap(),
+                                );
                             }
                             drop(s);
                             let _ = app_handle.emit("connection-status-changed", "connected");
@@ -365,7 +390,11 @@ impl XrayManager {
                                 s.server_address = Some(server_address.clone());
                                 s.error_message = None;
                                 info!("xray connected successfully");
-                                proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &bypass_ref.lock().unwrap(), &bypass_subnets_ref.lock().unwrap());
+                                proxy::enable_system_proxy(
+                                    DEFAULT_SOCKS_PORT,
+                                    &bypass_ref.lock().unwrap(),
+                                    &bypass_subnets_ref.lock().unwrap(),
+                                );
                             }
                             drop(s);
                             let _ = app_handle.emit("connection-status-changed", "connected");
@@ -445,7 +474,9 @@ impl XrayManager {
                     push_log_entry(
                         &verify_logs,
                         "warning",
-                        &format!("[verify] SOCKS5 proxy NOT reachable on port {DEFAULT_SOCKS_PORT}: {e}"),
+                        &format!(
+                            "[verify] SOCKS5 proxy NOT reachable on port {DEFAULT_SOCKS_PORT}: {e}"
+                        ),
                     );
                     warn!("[verify] SOCKS5 proxy NOT reachable: {e}");
                     return;
@@ -529,7 +560,8 @@ impl XrayManager {
         // Start TUN mode after xray connects (Linux only)
         #[cfg(target_os = "linux")]
         {
-            let (hev_bin, tun_config_dir, tun_server_ip, tun_bypass_subnets, tun_gateway_info) = tun_data;
+            let (hev_bin, tun_config_dir, tun_server_ip, tun_bypass_subnets, tun_gateway_info) =
+                tun_data;
             let tun_logs = self.logs.clone();
             let tun_state = self.state.clone();
             std::thread::spawn({
@@ -566,7 +598,9 @@ impl XrayManager {
                                 push_log_entry(
                                     &tun_logs,
                                     "error",
-                                    &format!("[tun] SOCKS5 proxy not ready after 3s: {e}. Skipping TUN."),
+                                    &format!(
+                                        "[tun] SOCKS5 proxy not ready after 3s: {e}. Skipping TUN."
+                                    ),
                                 );
                             }
                         }
@@ -579,7 +613,11 @@ impl XrayManager {
                     {
                         let state = tun_state.lock().unwrap();
                         if state.status != ConnectionStatus::Connected {
-                            push_log_entry(&tun_logs, "warning", "[tun] Connection no longer active, skipping TUN start");
+                            push_log_entry(
+                                &tun_logs,
+                                "warning",
+                                "[tun] Connection no longer active, skipping TUN start",
+                            );
                             return;
                         }
                     }
@@ -595,14 +633,20 @@ impl XrayManager {
                         tun_gateway_info,
                     ) {
                         Ok(()) => {
-                            push_log_entry(&tun_logs, "info", "[tun] TUN mode started successfully");
+                            push_log_entry(
+                                &tun_logs,
+                                "info",
+                                "[tun] TUN mode started successfully",
+                            );
                             info!("[tun] TUN mode active — all traffic routed through VPN");
                         }
                         Err(e) => {
                             push_log_entry(
                                 &tun_logs,
                                 "error",
-                                &format!("[tun] Failed to start TUN: {e}. Falling back to system proxy."),
+                                &format!(
+                                    "[tun] Failed to start TUN: {e}. Falling back to system proxy."
+                                ),
                             );
                             error!("[tun] TUN start failed: {e}");
                         }
@@ -620,12 +664,20 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
+        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         use tauri_plugin_vpn::VpnPluginExt;
 
         // Generate xray config (no bypass subnets on mobile)
-        let mut config_json =
-            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[], None, &[])?;
+        let mut config_json = generate_client_config(
+            server,
+            DEFAULT_SOCKS_PORT,
+            bypass_domains,
+            &[],
+            None,
+            &[],
+            dpi_bypass,
+        )?;
 
         // Apply Android-specific modifications
         config_json = config::modify_config_for_android(&config_json)?;
@@ -701,7 +753,11 @@ impl XrayManager {
                             let _ = app_handle.emit("connection-status-changed", "connected");
 
                             // Post-connection: verify traffic flow
-                            push_log_entry(&logs_ref, "info", "[verify] Waiting for traffic flow...");
+                            push_log_entry(
+                                &logs_ref,
+                                "info",
+                                "[verify] Waiting for traffic flow...",
+                            );
                             std::thread::sleep(Duration::from_secs(5));
 
                             // Check if still connected
@@ -722,7 +778,10 @@ impl XrayManager {
                                         cached.total_upload, cached.total_download,
                                     ),
                                 );
-                                info!("[verify] Mobile traffic flowing — up: {} B, down: {} B", cached.total_upload, cached.total_download);
+                                info!(
+                                    "[verify] Mobile traffic flowing — up: {} B, down: {} B",
+                                    cached.total_upload, cached.total_download
+                                );
                             } else {
                                 push_log_entry(
                                     &logs_ref,
@@ -769,13 +828,25 @@ impl XrayManager {
                             );
                             // Log which components failed
                             if !status.xray_running {
-                                push_log_entry(&logs_ref, "error", "[android] xray-core failed to start");
+                                push_log_entry(
+                                    &logs_ref,
+                                    "error",
+                                    "[android] xray-core failed to start",
+                                );
                             }
                             if !status.hev_running {
-                                push_log_entry(&logs_ref, "error", "[android] hev-socks5-tunnel failed to start");
+                                push_log_entry(
+                                    &logs_ref,
+                                    "error",
+                                    "[android] hev-socks5-tunnel failed to start",
+                                );
                             }
                             if !status.tun_active {
-                                push_log_entry(&logs_ref, "error", "[android] TUN interface not established");
+                                push_log_entry(
+                                    &logs_ref,
+                                    "error",
+                                    "[android] TUN interface not established",
+                                );
                             }
                             let _ = app_handle.vpn().stop_vpn();
                             let mut state = state_ref.lock().unwrap();
@@ -851,7 +922,10 @@ impl XrayManager {
         // so hev-socks5-tunnel can cleanly shut down while SOCKS5 is still available
         #[cfg(target_os = "linux")]
         {
-            let config_dir = self.config_path.lock().unwrap()
+            let config_dir = self
+                .config_path
+                .lock()
+                .unwrap()
                 .as_ref()
                 .and_then(|p| p.parent().map(|d| d.to_path_buf()));
             if let Some(ref dir) = config_dir {
@@ -932,7 +1006,9 @@ impl XrayManager {
             let output = app
                 .shell()
                 .sidecar("xray")
-                .map_err(|e| AppError::XrayProcess(format!("Failed to create sidecar command: {e}")))?
+                .map_err(|e| {
+                    AppError::XrayProcess(format!("Failed to create sidecar command: {e}"))
+                })?
                 .args(["api", "statsquery", "-s", config::STATS_API_ADDR])
                 .output()
                 .await
@@ -953,9 +1029,10 @@ impl XrayManager {
         #[cfg(mobile)]
         let (uplink, downlink) = {
             use tauri_plugin_vpn::VpnPluginExt;
-            let stats = app.vpn().query_stats().map_err(|e| {
-                AppError::XrayProcess(format!("Failed to query mobile stats: {e}"))
-            })?;
+            let stats = app
+                .vpn()
+                .query_stats()
+                .map_err(|e| AppError::XrayProcess(format!("Failed to query mobile stats: {e}")))?;
             (stats.upload, stats.download)
         };
 
@@ -1013,7 +1090,10 @@ impl XrayManager {
                     let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let value = entry
                         .get("value")
-                        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                        .and_then(|v| {
+                            v.as_u64()
+                                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                        })
                         .unwrap_or(0);
 
                     if name == "outbound>>>proxy>>>traffic>>>uplink" {

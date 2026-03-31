@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::models::{AppError, ServerConfig};
+use crate::models::{AppError, DpiBypassSettings, ServerConfig};
 
 pub const STATS_API_ADDR: &str = "127.0.0.1:10085";
 
@@ -11,6 +11,7 @@ pub fn generate_client_config(
     bypass_subnets: &[String],
     send_through: Option<&str>,
     vpn_dns_servers: &[String],
+    dpi_bypass: &DpiBypassSettings,
 ) -> Result<String, AppError> {
     // In TUN mode, skip localhost DNS entirely. The system resolver calls getaddrinfo()
     // which goes through /etc/resolv.conf — corporate VPNs push their own DNS server
@@ -142,6 +143,35 @@ pub fn generate_client_config(
         }
     });
 
+    // Inject DPI bypass fragment into proxy outbound's streamSettings.sockopt
+    if dpi_bypass.enabled {
+        if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+            for outbound in outbounds.iter_mut() {
+                if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
+                    let sockopt = outbound
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("streamSettings")
+                        .or_insert(json!({}))
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("sockopt")
+                        .or_insert(json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    sockopt.insert(
+                        "fragment".to_string(),
+                        json!({
+                            "packets": dpi_bypass.packets,
+                            "length": dpi_bypass.length,
+                            "interval": dpi_bypass.interval
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
     // On Linux with TUN mode, bind outbound connections to the physical interface IP
     // so that `ip rule add from <local_ip> lookup main` routes them through the
     // physical interface, bypassing the TUN default route and preventing loops.
@@ -212,7 +242,11 @@ pub fn generate_client_config(
             .iter()
             .filter_map(|s| {
                 let s = s.trim();
-                if s.is_empty() { None } else { Some(Value::String(s.to_string())) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(Value::String(s.to_string()))
+                }
             })
             .collect();
         if !vpn_ips.is_empty() {
@@ -230,10 +264,10 @@ pub fn generate_client_config(
         "10.0.0.0/8".to_string(),
         "172.16.0.0/12".to_string(),
         "192.168.0.0/16".to_string(),
-        "224.0.0.0/4".to_string(),   // IPv4 multicast (mDNS, SSDP, etc.) — never proxy
+        "224.0.0.0/4".to_string(), // IPv4 multicast (mDNS, SSDP, etc.) — never proxy
         "::1/128".to_string(),
         "fc00::/7".to_string(),
-        "ff00::/8".to_string(),       // IPv6 multicast
+        "ff00::/8".to_string(), // IPv6 multicast
     ];
 
     // Defense-in-depth: route VPN server IP directly (alongside helper's ip route add)
@@ -275,33 +309,29 @@ pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> 
     let mut config: serde_json::Value =
         serde_json::from_str(config_json).map_err(AppError::from)?;
 
-    // Add sockopt to proxy outbound
+    // Add sockopt mark to proxy outbound (merge with existing sockopt to preserve fragment settings)
     if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
         for outbound in outbounds.iter_mut() {
             if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
-                outbound
+                let sockopt = outbound
                     .as_object_mut()
                     .unwrap()
                     .entry("streamSettings")
                     .or_insert(serde_json::json!({}))
                     .as_object_mut()
                     .unwrap()
-                    .insert(
-                        "sockopt".to_string(),
-                        serde_json::json!({ "mark": 255 }),
-                    );
+                    .entry("sockopt")
+                    .or_insert(serde_json::json!({}))
+                    .as_object_mut()
+                    .unwrap();
+                sockopt.insert("mark".to_string(), serde_json::json!(255));
             }
         }
     }
 
     // Remove HTTP inbound (keep only SOCKS)
     if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {
-        inbounds.retain(|inbound| {
-            inbound
-                .get("protocol")
-                .and_then(|p| p.as_str())
-                != Some("http")
-        });
+        inbounds.retain(|inbound| inbound.get("protocol").and_then(|p| p.as_str()) != Some("http"));
     }
 
     serde_json::to_string_pretty(&config).map_err(AppError::from)
@@ -310,7 +340,7 @@ pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::RealitySettings;
+    use crate::models::{DpiBypassSettings, RealitySettings};
 
     #[test]
     fn test_generate_config() {
@@ -329,7 +359,16 @@ mod tests {
             },
         };
 
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         // Verify inbound
@@ -367,7 +406,16 @@ mod tests {
     #[test]
     fn test_config_custom_socks_port() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            1080,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert_eq!(config["inbounds"][0]["port"], 1080);
@@ -376,7 +424,16 @@ mod tests {
     #[test]
     fn test_config_has_required_outbounds() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let outbounds = config["outbounds"].as_array().unwrap();
@@ -395,7 +452,16 @@ mod tests {
     #[test]
     fn test_config_reality_security() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let stream = &config["outbounds"][0]["streamSettings"];
@@ -407,7 +473,16 @@ mod tests {
     #[test]
     fn test_config_encryption_is_none() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let user = &config["outbounds"][0]["settings"]["vnext"][0]["users"][0];
@@ -417,14 +492,26 @@ mod tests {
     #[test]
     fn test_config_routing_rules() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert_eq!(config["routing"]["domainStrategy"], "IPIfNonMatch");
         let rules = config["routing"]["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0]["outboundTag"], "direct");
-        assert!(rules[0]["domain"].as_array().unwrap().contains(&Value::String("localhost".to_string())));
+        assert!(rules[0]["domain"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String("localhost".to_string())));
         assert_eq!(rules[1]["outboundTag"], "direct");
         let ips = rules[1]["ip"].as_array().unwrap();
         assert!(ips.contains(&Value::String("127.0.0.0/8".to_string())));
@@ -435,7 +522,16 @@ mod tests {
     #[test]
     fn test_config_sniffing_enabled() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let sniffing = &config["inbounds"][0]["sniffing"];
@@ -461,7 +557,16 @@ mod tests {
                 fingerprint: "chrome".to_string(),
             },
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let parsed: Result<Value, _> = serde_json::from_str(&config_str);
         assert!(
             parsed.is_ok(),
@@ -480,7 +585,16 @@ mod tests {
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let vnext = &config["outbounds"][0]["settings"]["vnext"][0];
@@ -508,7 +622,16 @@ mod tests {
                 fingerprint: "safari".to_string(),
             },
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let reality = &config["outbounds"][0]["streamSettings"]["realitySettings"];
@@ -521,7 +644,16 @@ mod tests {
     #[test]
     fn test_config_has_stats_section() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         assert!(
@@ -533,7 +665,16 @@ mod tests {
     #[test]
     fn test_config_has_api_section() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let api = &config["api"];
@@ -548,13 +689,26 @@ mod tests {
         // In proxy-only mode (no sendThrough), bypass subnets go in the normal direct rule
         let server = ServerConfig::default();
         let bypass_subnets = vec!["10.8.0.0/24".to_string(), "172.20.0.0/16".to_string()];
-        let config_str = generate_client_config(&server, 10808, &[], &bypass_subnets, None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &bypass_subnets,
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let rules = config["routing"]["rules"].as_array().unwrap();
-        let ip_rule = rules.iter().find(|r| {
-            r.get("ip").is_some() && r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct")
-        }).unwrap();
+        let ip_rule = rules
+            .iter()
+            .find(|r| {
+                r.get("ip").is_some()
+                    && r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct")
+            })
+            .unwrap();
         let ips = ip_rule["ip"].as_array().unwrap();
         assert!(ips.contains(&Value::String("10.8.0.0/24".to_string())));
         assert!(ips.contains(&Value::String("172.20.0.0/16".to_string())));
@@ -562,7 +716,9 @@ mod tests {
         assert!(ips.contains(&Value::String("192.168.0.0/16".to_string())));
         // No direct-vpn outbound in proxy mode
         let outbounds = config["outbounds"].as_array().unwrap();
-        assert!(!outbounds.iter().any(|o| o.get("tag").and_then(|t| t.as_str()) == Some("direct-vpn")));
+        assert!(!outbounds
+            .iter()
+            .any(|o| o.get("tag").and_then(|t| t.as_str()) == Some("direct-vpn")));
     }
 
     #[test]
@@ -571,31 +727,48 @@ mod tests {
         // to let the kernel assign the correct VPN-assigned source IP
         let server = ServerConfig::default();
         let bypass_subnets = vec!["10.8.0.0/24".to_string(), "185.62.200.0/22".to_string()];
-        let config_str = generate_client_config(&server, 10808, &[], &bypass_subnets, Some("192.168.1.100"), &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &bypass_subnets,
+            Some("192.168.1.100"),
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         // Verify direct-vpn outbound exists without sendThrough
         let outbounds = config["outbounds"].as_array().unwrap();
-        let direct_vpn = outbounds.iter().find(|o| {
-            o.get("tag").and_then(|t| t.as_str()) == Some("direct-vpn")
-        }).expect("direct-vpn outbound must exist in TUN mode with bypass subnets");
-        assert!(direct_vpn.get("sendThrough").is_none(),
-            "direct-vpn must NOT have sendThrough");
+        let direct_vpn = outbounds
+            .iter()
+            .find(|o| o.get("tag").and_then(|t| t.as_str()) == Some("direct-vpn"))
+            .expect("direct-vpn outbound must exist in TUN mode with bypass subnets");
+        assert!(
+            direct_vpn.get("sendThrough").is_none(),
+            "direct-vpn must NOT have sendThrough"
+        );
         assert_eq!(direct_vpn["protocol"], "freedom");
 
         // Verify routing rule routes bypass subnets to direct-vpn
         let rules = config["routing"]["rules"].as_array().unwrap();
-        let vpn_rule = rules.iter().find(|r| {
-            r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct-vpn")
-        }).expect("direct-vpn routing rule must exist");
+        let vpn_rule = rules
+            .iter()
+            .find(|r| r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct-vpn"))
+            .expect("direct-vpn routing rule must exist");
         let vpn_ips = vpn_rule["ip"].as_array().unwrap();
         assert!(vpn_ips.contains(&Value::String("10.8.0.0/24".to_string())));
         assert!(vpn_ips.contains(&Value::String("185.62.200.0/22".to_string())));
 
         // Verify the main direct IP rule does NOT contain bypass subnets
-        let direct_rule = rules.iter().find(|r| {
-            r.get("ip").is_some() && r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct")
-        }).unwrap();
+        let direct_rule = rules
+            .iter()
+            .find(|r| {
+                r.get("ip").is_some()
+                    && r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct")
+            })
+            .unwrap();
         let direct_ips = direct_rule["ip"].as_array().unwrap();
         assert!(!direct_ips.contains(&Value::String("10.8.0.0/24".to_string())));
         assert!(!direct_ips.contains(&Value::String("185.62.200.0/22".to_string())));
@@ -610,11 +783,24 @@ mod tests {
         // Corporate VPNs push their own DNS server into /etc/resolv.conf, and in TUN mode
         // that path may be broken — causing a 30s hang per lookup. Skip localhost entirely.
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.100"), &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            Some("192.168.1.100"),
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
-        assert_eq!(dns.len(), 2, "TUN mode with no VPN DNS must only include 1.1.1.1 and 8.8.8.8");
+        assert_eq!(
+            dns.len(),
+            2,
+            "TUN mode with no VPN DNS must only include 1.1.1.1 and 8.8.8.8"
+        );
         assert_eq!(dns[0], "1.1.1.1");
         assert_eq!(dns[1], "8.8.8.8");
     }
@@ -628,7 +814,16 @@ mod tests {
         let server = ServerConfig::default();
         let vpn_dns = vec!["10.8.0.1".to_string()];
         let bypass_subnets = vec!["10.0.0.0/8".to_string(), "185.62.200.0/22".to_string()];
-        let config_str = generate_client_config(&server, 10808, &[], &bypass_subnets, Some("192.168.1.100"), &vpn_dns).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &bypass_subnets,
+            Some("192.168.1.100"),
+            &vpn_dns,
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
@@ -647,7 +842,16 @@ mod tests {
         // When vpn_dns_servers is set but bypass_subnets is empty, fall back to RFC-1918 CIDRs
         let server = ServerConfig::default();
         let vpn_dns = vec!["10.8.0.1".to_string()];
-        let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.100"), &vpn_dns).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            Some("192.168.1.100"),
+            &vpn_dns,
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
@@ -662,7 +866,16 @@ mod tests {
     #[test]
     fn test_config_proxy_mode_dns_includes_localhost() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let dns = config["dns"]["servers"].as_array().unwrap();
@@ -682,20 +895,40 @@ mod tests {
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let rules = config["routing"]["rules"].as_array().unwrap();
         let ip_rule = rules.iter().find(|r| r.get("ip").is_some()).unwrap();
         let ips = ip_rule["ip"].as_array().unwrap();
-        assert!(ips.contains(&Value::String("45.151.233.107/32".to_string())),
-            "Server IP should be in direct routing rules");
+        assert!(
+            ips.contains(&Value::String("45.151.233.107/32".to_string())),
+            "Server IP should be in direct routing rules"
+        );
     }
 
     #[test]
     fn test_config_send_through_sets_outbounds() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], Some("192.168.1.50"), &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            Some("192.168.1.50"),
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let outbounds = config["outbounds"].as_array().unwrap();
@@ -708,11 +941,81 @@ mod tests {
     #[test]
     fn test_config_has_stats_policy() {
         let server = ServerConfig::default();
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+        )
+        .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let system = &config["policy"]["system"];
         assert_eq!(system["statsOutboundUplink"], true);
         assert_eq!(system["statsOutboundDownlink"], true);
+    }
+
+    #[test]
+    fn test_config_dpi_bypass_disabled_no_fragment() {
+        let server = ServerConfig::default();
+        let dpi = DpiBypassSettings {
+            enabled: false,
+            ..DpiBypassSettings::default()
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        // No sockopt.fragment when DPI bypass is disabled
+        let stream = &config["outbounds"][0]["streamSettings"];
+        assert!(
+            stream.get("sockopt").is_none(),
+            "sockopt should not exist when DPI bypass is disabled"
+        );
+    }
+
+    #[test]
+    fn test_config_dpi_bypass_enabled_injects_fragment() {
+        let server = ServerConfig::default();
+        let dpi = DpiBypassSettings {
+            enabled: true,
+            packets: "tlshello".to_string(),
+            length: "100-200".to_string(),
+            interval: "10-20".to_string(),
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let fragment = &config["outbounds"][0]["streamSettings"]["sockopt"]["fragment"];
+        assert_eq!(fragment["packets"], "tlshello");
+        assert_eq!(fragment["length"], "100-200");
+        assert_eq!(fragment["interval"], "10-20");
+    }
+
+    #[test]
+    fn test_config_dpi_bypass_only_on_proxy_outbound() {
+        let server = ServerConfig::default();
+        let dpi = DpiBypassSettings {
+            enabled: true,
+            packets: "tlshello".to_string(),
+            length: "100-200".to_string(),
+            interval: "10-20".to_string(),
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let outbounds = config["outbounds"].as_array().unwrap();
+        // direct and block outbounds should not have sockopt.fragment
+        for ob in outbounds.iter().skip(1) {
+            assert!(
+                ob.get("streamSettings")
+                    .and_then(|s| s.get("sockopt"))
+                    .and_then(|s| s.get("fragment"))
+                    .is_none(),
+                "non-proxy outbound should not have fragment"
+            );
+        }
     }
 }

@@ -107,11 +107,14 @@ pub fn detect_default_gateway_and_ip() -> Option<(String, String, String)> {
         })
         .next()
         .or_else(|| {
-            routes.iter().filter_map(|r| {
-                let gw = r.gateway.as_deref()?;
-                let dev = r.dev.as_deref()?;
-                Some((gw.to_string(), dev.to_string()))
-            }).next()
+            routes
+                .iter()
+                .filter_map(|r| {
+                    let gw = r.gateway.as_deref()?;
+                    let dev = r.dev.as_deref()?;
+                    Some((gw.to_string(), dev.to_string()))
+                })
+                .next()
         })?;
 
     // Get IP address of that interface
@@ -233,10 +236,7 @@ pub fn parse_routes_json(json: &str) -> Vec<DetectedVpn> {
 
 /// Check if a route destination is a default/catch-all route.
 fn is_default_route(dst: &str) -> bool {
-    matches!(
-        dst,
-        "default" | "0.0.0.0/0" | "0.0.0.0/1" | "128.0.0.0/1"
-    )
+    matches!(dst, "default" | "0.0.0.0/0" | "0.0.0.0/1" | "128.0.0.0/1")
 }
 
 /// Check if a route destination is a host route (/32 or bare IP without subnet).
@@ -275,10 +275,7 @@ fn classify_vpn_type(iface: &str) -> String {
 /// Returns true if the IP string is in a private/RFC-1918 range:
 /// 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16.
 fn is_private_dns_ip(ip: &str) -> bool {
-    let parts: Vec<u8> = ip
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let parts: Vec<u8> = ip.split('.').filter_map(|p| p.parse().ok()).collect();
     if parts.len() != 4 {
         return false;
     }
@@ -320,12 +317,29 @@ fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
     };
     let parse = |s: &str| -> Option<u32> {
         let parts: Vec<u8> = s.split('.').filter_map(|p| p.parse().ok()).collect();
-        if parts.len() != 4 { return None; }
-        Some(((parts[0] as u32) << 24) | ((parts[1] as u32) << 16) | ((parts[2] as u32) << 8) | (parts[3] as u32))
+        if parts.len() != 4 {
+            return None;
+        }
+        Some(
+            ((parts[0] as u32) << 24)
+                | ((parts[1] as u32) << 16)
+                | ((parts[2] as u32) << 8)
+                | (parts[3] as u32),
+        )
     };
-    let ip_u32 = match parse(ip) { Some(v) => v, None => return false };
-    let prefix_u32 = match parse(prefix_str) { Some(v) => v, None => return false };
-    let mask: u32 = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    let ip_u32 = match parse(ip) {
+        Some(v) => v,
+        None => return false,
+    };
+    let prefix_u32 = match parse(prefix_str) {
+        Some(v) => v,
+        None => return false,
+    };
+    let mask: u32 = if prefix_len == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
     (ip_u32 & mask) == (prefix_u32 & mask)
 }
 
@@ -337,7 +351,10 @@ fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
 /// queries, which xray treats as a ~4-second timeout — making every public DNS lookup
 /// take 4 s × N corporate-DNS-servers before finally reaching 1.1.1.1. Only LAN-reachable
 /// DNS servers (e.g. the home router, 192.168.1.1) respond quickly and are safe to include.
-pub fn filter_dns_servers_by_subnet(dns_servers: &[String], bypass_subnets: &[String]) -> Vec<String> {
+pub fn filter_dns_servers_by_subnet(
+    dns_servers: &[String],
+    bypass_subnets: &[String],
+) -> Vec<String> {
     dns_servers
         .iter()
         .filter(|ip| !bypass_subnets.iter().any(|subnet| ip_in_cidr(ip, subnet)))
@@ -349,10 +366,7 @@ pub fn filter_dns_servers_by_subnet(dns_servers: &[String], bypass_subnets: &[St
 /// Tries `/run/systemd/resolve/resolv.conf` first, then falls back to `/etc/resolv.conf`.
 /// Returns only RFC-1918 nameserver IPs (i.e. pushed by a corporate VPN).
 pub fn detect_vpn_dns_servers() -> Vec<String> {
-    let candidates = [
-        "/run/systemd/resolve/resolv.conf",
-        "/etc/resolv.conf",
-    ];
+    let candidates = ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"];
     for path in &candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
             let servers = parse_resolv_conf(&content);

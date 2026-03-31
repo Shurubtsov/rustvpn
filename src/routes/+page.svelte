@@ -220,15 +220,26 @@
 			</svg>
 			Logs
 		</a>
-		<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-			<input
-				type="checkbox"
-				checked={appSettings.settings.auto_connect}
-				onchange={(e) => appSettings.setAutoConnect(e.currentTarget.checked)}
-				class="rounded border-border"
-			/>
-			Auto-connect
-		</label>
+		<div class="flex items-center gap-3">
+			<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+				<input
+					type="checkbox"
+					checked={appSettings.settings.dpi_bypass?.enabled ?? false}
+					onchange={(e) => appSettings.setDpiBypass(e.currentTarget.checked)}
+					class="rounded border-border"
+				/>
+				DPI bypass
+			</label>
+			<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+				<input
+					type="checkbox"
+					checked={appSettings.settings.auto_connect}
+					onchange={(e) => appSettings.setAutoConnect(e.currentTarget.checked)}
+					class="rounded border-border"
+				/>
+				Auto-connect
+			</label>
+		</div>
 	</div>
 
 	<!-- Bypass domains (split tunneling) -->

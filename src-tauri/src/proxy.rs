@@ -178,7 +178,10 @@ fn enable_windows(bypass_domains: &[String], bypass_subnets: &[String]) {
     // Notify the system that proxy settings changed so browsers pick it up immediately
     refresh_windows_proxy();
 
-    info!("System proxy enabled via Windows registry ({})", proxy_server);
+    info!(
+        "System proxy enabled via Windows registry ({})",
+        proxy_server
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -284,11 +287,21 @@ fn enable_macos(socks_port: u16, bypass_domains: &[String], bypass_subnets: &[St
     networksetup(&["-setwebproxystate", &service, "on"]);
 
     // Set HTTPS proxy
-    networksetup(&["-setsecurewebproxy", &service, HTTP_HOST, &HTTP_PORT.to_string()]);
+    networksetup(&[
+        "-setsecurewebproxy",
+        &service,
+        HTTP_HOST,
+        &HTTP_PORT.to_string(),
+    ]);
     networksetup(&["-setsecurewebproxystate", &service, "on"]);
 
     // Set SOCKS proxy
-    networksetup(&["-setsocksfirewallproxy", &service, SOCKS_HOST, &socks_port.to_string()]);
+    networksetup(&[
+        "-setsocksfirewallproxy",
+        &service,
+        SOCKS_HOST,
+        &socks_port.to_string(),
+    ]);
     networksetup(&["-setsocksfirewallproxystate", &service, "on"]);
 
     // Set bypass domains
@@ -318,7 +331,10 @@ fn enable_macos(socks_port: u16, bypass_domains: &[String], bypass_subnets: &[St
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     networksetup(&args_refs);
 
-    info!("System proxy enabled via networksetup (service: {})", service);
+    info!(
+        "System proxy enabled via networksetup (service: {})",
+        service
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -335,7 +351,10 @@ fn disable_macos() {
     networksetup(&["-setsecurewebproxystate", &service, "off"]);
     networksetup(&["-setsocksfirewallproxystate", &service, "off"]);
 
-    info!("System proxy disabled via networksetup (service: {})", service);
+    info!(
+        "System proxy disabled via networksetup (service: {})",
+        service
+    );
 }
 
 #[cfg(target_os = "macos")]

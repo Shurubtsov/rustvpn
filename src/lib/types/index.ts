@@ -43,10 +43,18 @@ export interface LogEntry {
 	message: string;
 }
 
+export interface DpiBypassSettings {
+	enabled: boolean;
+	packets: string;
+	length: string;
+	interval: string;
+}
+
 export interface AppSettings {
 	auto_connect: boolean;
 	last_server_id: string | null;
 	bypass_domains: string[];
+	dpi_bypass: DpiBypassSettings;
 }
 
 export interface DetectedVpn {

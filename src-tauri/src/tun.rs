@@ -47,13 +47,24 @@ pub fn cleanup_stale_tun(config_dir: &Path) {
         let gw_file = config_dir.join("tun_gateway.txt");
 
         let mut args = if let Some(h) = helper {
-            vec![h, "stop".to_string(), pid_file.to_string_lossy().to_string(),
-                 TUN_NAME.to_string(), TUN_GW.to_string()]
+            vec![
+                h,
+                "stop".to_string(),
+                pid_file.to_string_lossy().to_string(),
+                TUN_NAME.to_string(),
+                TUN_GW.to_string(),
+            ]
         } else {
             // No helper — use individual commands (avoids shell injection via bash -c)
-            let _ = Command::new("pkill").args(["-f", "hev-socks5-tunnel"]).output();
-            let _ = Command::new("ip").args(["rule", "del", "lookup", "main", "priority", "100"]).output();
-            let _ = Command::new("ip").args(["route", "del", "default", "via", TUN_GW, "dev", TUN_NAME]).output();
+            let _ = Command::new("pkill")
+                .args(["-f", "hev-socks5-tunnel"])
+                .output();
+            let _ = Command::new("ip")
+                .args(["rule", "del", "lookup", "main", "priority", "100"])
+                .output();
+            let _ = Command::new("ip")
+                .args(["route", "del", "default", "via", TUN_GW, "dev", TUN_NAME])
+                .output();
             let _ = Command::new("ip").args(["link", "del", TUN_NAME]).output();
             return;
         };
@@ -159,7 +170,10 @@ pub fn start_tun(
 
     // Save gateway info for stop_tun (including local_ip for ip rule cleanup)
     let gw_file = config_dir.join("tun_gateway.txt");
-    std::fs::write(&gw_file, format!("{server_ip}\n{gateway}\n{dev}\n{local_ip}"))?;
+    std::fs::write(
+        &gw_file,
+        format!("{server_ip}\n{gateway}\n{dev}\n{local_ip}"),
+    )?;
 
     // Build args for helper (includes app PID for watchdog and local IP for routing)
     let app_pid = std::process::id().to_string();
@@ -199,16 +213,11 @@ pub fn start_tun(
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Clean up gateway file on failure so stop_tun doesn't use stale data
         let _ = std::fs::remove_file(&gw_file);
-        return Err(AppError::XrayProcess(format!(
-            "TUN setup failed: {stderr}"
-        )));
+        return Err(AppError::XrayProcess(format!("TUN setup failed: {stderr}")));
     }
 
     // Verify TUN interface is up
-    if let Ok(check) = Command::new("ip")
-        .args(["link", "show", TUN_NAME])
-        .output()
-    {
+    if let Ok(check) = Command::new("ip").args(["link", "show", TUN_NAME]).output() {
         if check.status.success() {
             info!("TUN device {TUN_NAME} is up");
         } else {
@@ -322,11 +331,7 @@ fn detect_default_gateway() -> Result<(String, String), AppError> {
 }
 
 /// Write hev-socks5-tunnel YAML config file.
-fn write_hev_config(
-    path: &Path,
-    socks_port: u16,
-    pid_file: &Path,
-) -> Result<(), AppError> {
+fn write_hev_config(path: &Path, socks_port: u16, pid_file: &Path) -> Result<(), AppError> {
     let config = format!(
         r#"tunnel:
   name: {TUN_NAME}

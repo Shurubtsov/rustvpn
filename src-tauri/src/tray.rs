@@ -78,7 +78,12 @@ fn handle_toggle_connection<R: Runtime>(app: &AppHandle<R>) {
             if let Some(ref server_id) = settings.last_server_id {
                 if let Ok(servers) = storage::load_servers(app) {
                     if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
-                        if let Err(e) = manager.start(app, server, &settings.bypass_domains) {
+                        if let Err(e) = manager.start(
+                            app,
+                            server,
+                            &settings.bypass_domains,
+                            &settings.dpi_bypass,
+                        ) {
                             warn!("Tray connect failed: {e}");
                         }
                         return;
