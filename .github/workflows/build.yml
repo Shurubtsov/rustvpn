@@ -8,6 +8,7 @@ on:
 
 env:
   XRAY_VERSION: "v26.2.6"
+  HEV_VERSION: "2.14.4"
 
 jobs:
   build:
@@ -20,16 +21,22 @@ jobs:
             xray_archive: Xray-linux-64.zip
             xray_binary: xray
             sidecar_name: xray-x86_64-unknown-linux-gnu
+            hev_binary: hev-socks5-tunnel-linux-x86_64
+            hev_sidecar_name: hev-socks5-tunnel-x86_64-unknown-linux-gnu
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             xray_archive: Xray-windows-64.zip
             xray_binary: xray.exe
             sidecar_name: xray-x86_64-pc-windows-msvc.exe
+            hev_binary: ""
+            hev_sidecar_name: ""
           - platform: macos-latest
             rust_target: aarch64-apple-darwin
             xray_archive: Xray-macos-arm64-v8a.zip
             xray_binary: xray
             sidecar_name: xray-aarch64-apple-darwin
+            hev_binary: hev-socks5-tunnel-darwin-arm64
+            hev_sidecar_name: hev-socks5-tunnel-aarch64-apple-darwin
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -80,6 +87,22 @@ jobs:
           unzip -o /tmp/xray.zip "${{ matrix.xray_binary }}" -d /tmp/xray-extracted
           mv "/tmp/xray-extracted/${{ matrix.xray_binary }}" "src-tauri/binaries/${{ matrix.sidecar_name }}"
           chmod +x "src-tauri/binaries/${{ matrix.sidecar_name }}" || true
+
+      # Download hev-socks5-tunnel sidecar binary (Linux and macOS only)
+      - name: Download hev-socks5-tunnel binary
+        if: matrix.hev_binary != ''
+        shell: bash
+        run: |
+          curl -sL "https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/${{ matrix.hev_binary }}" \
+            -o "src-tauri/binaries/${{ matrix.hev_sidecar_name }}"
+          chmod +x "src-tauri/binaries/${{ matrix.hev_sidecar_name }}"
+
+      # Create empty hev-socks5-tunnel placeholder for Windows (not used but required by Tauri sidecar config)
+      - name: Create hev-socks5-tunnel placeholder (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          touch "src-tauri/binaries/hev-socks5-tunnel-x86_64-pc-windows-msvc.exe"
 
       - name: Run Rust linting
         working-directory: src-tauri
