@@ -309,25 +309,10 @@ pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> 
     let mut config: serde_json::Value =
         serde_json::from_str(config_json).map_err(AppError::from)?;
 
-    // Add sockopt mark to proxy outbound (merge with existing sockopt to preserve fragment settings)
-    if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
-        for outbound in outbounds.iter_mut() {
-            if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
-                let sockopt = outbound
-                    .as_object_mut()
-                    .unwrap()
-                    .entry("streamSettings")
-                    .or_insert(serde_json::json!({}))
-                    .as_object_mut()
-                    .unwrap()
-                    .entry("sockopt")
-                    .or_insert(serde_json::json!({}))
-                    .as_object_mut()
-                    .unwrap();
-                sockopt.insert("mark".to_string(), serde_json::json!(255));
-            }
-        }
-    }
+    // Note: sockopt.mark is NOT set on Android. The app process lacks CAP_NET_ADMIN,
+    // so SO_MARK always fails with "operation not permitted". Worse, the failure aborts
+    // the entire sockopt application — including fragment settings needed for DPI bypass.
+    // VPN routing bypass is handled by addDisallowedApplication(packageName) instead.
 
     // Remove HTTP inbound (keep only SOCKS)
     if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {
