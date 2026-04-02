@@ -48,9 +48,8 @@ pub fn run() {
 
             app.manage(XrayManager::new());
 
-            // On mobile, pre-register WARP in background so credentials are
-            // ready by the time the user connects. Non-blocking.
-            #[cfg(mobile)]
+            // Pre-register WARP in background so credentials are ready by the
+            // time the user connects on mobile cellular. Harmless no-op on desktop.
             warp::ensure_registered(app.handle());
 
             let handle = app.handle().clone();
