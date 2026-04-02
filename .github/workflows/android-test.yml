@@ -1,0 +1,131 @@
+name: Android Test APK
+
+on:
+  workflow_dispatch:
+
+env:
+  HEV_VERSION: "2.14.4"
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      # Cache libv2ray.aar (takes ~3 min to build)
+      - name: Cache libv2ray AAR
+        id: cache-libv2ray
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/tauri-plugin-vpn/android/libs/libv2ray.aar
+          key: libv2ray-aar-arm64-v1
+
+      - name: Build AndroidLibXrayLite AAR
+        if: steps.cache-libv2ray.outputs.cache-hit != 'true'
+        run: |
+          LIBS_DIR="src-tauri/tauri-plugin-vpn/android/libs"
+          mkdir -p "$LIBS_DIR"
+          git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
+          cd /tmp/AndroidLibXrayLite
+          gomobile bind -v -target=android/arm64 -androidapi 21 -ldflags='-s -w' -o /tmp/libv2ray.aar ./
+          cp /tmp/libv2ray.aar "${GITHUB_WORKSPACE}/${LIBS_DIR}/libv2ray.aar"
+
+      # Cache libhev.so (takes ~1 min to build)
+      - name: Cache libhev.so
+        id: cache-libhev
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/libhev.so
+          key: libhev-so-arm64-${{ env.HEV_VERSION }}
+
+      - name: Build hev-socks5-tunnel from source
+        if: steps.cache-libhev.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNILIBS_DIR"
+          export NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
+          mkdir -p /tmp/hev-build
+          git clone --depth 1 --branch "${HEV_VERSION}" --recursive \
+            https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-build/jni
+          cd /tmp/hev-build
+          "${NDK_HOME}/ndk-build" APP_ABI=arm64-v8a -j$(nproc)
+          cp /tmp/hev-build/libs/arm64-v8a/libhev-socks5-tunnel.so "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          chmod +x "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+
+      - name: Initialize Tauri Android
+        run: pnpm tauri android init
+
+      - name: Configure native library extraction
+        run: |
+          APP_GRADLE="src-tauri/gen/android/app/build.gradle.kts"
+          if [ -f "$APP_GRADLE" ]; then
+            sed -i '/^android {/a\    packaging { jniLibs { useLegacyPackaging = true } }' "$APP_GRADLE"
+          fi
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: pnpm tauri android build --apk
+
+      - name: Collect APK
+        run: |
+          mkdir -p release-assets
+          APK=$(find src-tauri/gen/android -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            cp "$APK" "release-assets/RustVPN-test.apk"
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-apk
+          path: release-assets/*.apk
+          retention-days: 3
