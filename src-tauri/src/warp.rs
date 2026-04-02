@@ -8,7 +8,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::models::AppError;
 
-const WARP_API_BASE: &str = "https://api.cloudflareclient.com/v0a2158/reg";
+const WARP_API_BASE: &str = "https://api.cloudflareclient.com/v0a884/reg";
 const WARP_CONFIG_FILE: &str = "warp.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,13 +88,14 @@ fn register_warp() -> Result<WarpConfig, AppError> {
         "install_id": "",
         "fcm_token": "",
         "tos": "2024-01-01T00:00:00+00:00",
-        "model": "Android",
+        "model": "PC",
         "type": "Android",
         "locale": "en_US"
     });
 
     let resp: serde_json::Value = ureq::post(WARP_API_BASE)
         .set("Content-Type", "application/json")
+        .set("CF-Client-Version", "a-7.21-0721")
         .send_json(&reg_body)
         .map_err(|e| AppError::Config(format!("WARP registration failed: {e}")))?
         .into_json()
@@ -109,16 +110,8 @@ fn register_warp() -> Result<WarpConfig, AppError> {
         .ok_or_else(|| AppError::Config("WARP response missing 'token'".to_string()))?
         .to_string();
 
-    // Fetch full device config
-    let config_url = format!("{}/{}", WARP_API_BASE, device_id);
-    let cfg_resp: serde_json::Value = ureq::get(&config_url)
-        .set("Authorization", &format!("Bearer {}", access_token))
-        .call()
-        .map_err(|e| AppError::Config(format!("WARP config fetch failed: {e}")))?
-        .into_json()
-        .map_err(|e| AppError::Config(format!("WARP config parse error: {e}")))?;
-
-    let config = &cfg_resp["config"];
+    // The registration response already contains the full config
+    let config = &resp["config"];
     let interface = &config["interface"];
     let peer = &config["peers"][0];
 
@@ -135,15 +128,14 @@ fn register_warp() -> Result<WarpConfig, AppError> {
         .unwrap_or("bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=")
         .to_string();
 
-    // Endpoint: prefer v4
-    let endpoint = peer["endpoint"]["v4"]
+    // Endpoint: prefer host (has correct port), v4/v6 may have port=0
+    let endpoint = peer["endpoint"]["host"]
         .as_str()
-        .or_else(|| peer["endpoint"]["host"].as_str())
         .unwrap_or("engage.cloudflareclient.com:2408")
         .to_string();
 
-    // Reserved bytes from client_id
-    let reserved = parse_client_id(&cfg_resp["client_id"]);
+    // Reserved bytes from client_id (in config section)
+    let reserved = parse_client_id(&config["client_id"]);
 
     Ok(WarpConfig {
         private_key: private_key_b64,
@@ -158,14 +150,18 @@ fn register_warp() -> Result<WarpConfig, AppError> {
 }
 
 /// Parse the client_id field into 3 reserved bytes.
-/// client_id is a base64-encoded value; we take the first 3 bytes.
+/// client_id is a short hex string (e.g. "a8cc"); decode to bytes, pad to 3.
 fn parse_client_id(value: &serde_json::Value) -> [u8; 3] {
     if let Some(s) = value.as_str() {
-        if let Ok(bytes) = BASE64.decode(s) {
-            if bytes.len() >= 3 {
-                return [bytes[0], bytes[1], bytes[2]];
-            }
+        let bytes: Vec<u8> = (0..s.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+            .collect();
+        let mut result = [0u8; 3];
+        for (i, &b) in bytes.iter().take(3).enumerate() {
+            result[i] = b;
         }
+        return result;
     }
     [0, 0, 0]
 }
@@ -176,7 +172,13 @@ mod tests {
 
     #[test]
     fn parse_client_id_valid() {
-        let val = serde_json::json!("AQID"); // base64 of [1, 2, 3]
+        let val = serde_json::json!("a8cc");
+        assert_eq!(parse_client_id(&val), [0xa8, 0xcc, 0]);
+    }
+
+    #[test]
+    fn parse_client_id_three_bytes() {
+        let val = serde_json::json!("010203");
         assert_eq!(parse_client_id(&val), [1, 2, 3]);
     }
 
