@@ -24,6 +24,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // Debug breadcrumb — try multiple paths to find one that works
+            let _ = std::fs::write("/sdcard/rustvpn_setup.txt", "setup() called\n");
+            let _ = std::fs::write("/data/local/tmp/rustvpn_setup.txt", "setup() called\n");
+            // Also try app cache dir via environment
+            if let Ok(cache) = app.path().app_cache_dir() {
+                let _ = std::fs::create_dir_all(&cache);
+                let _ = std::fs::write(cache.join("rustvpn_setup.txt"), "setup() called\n");
+            }
+
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_shell::init())?;
 
