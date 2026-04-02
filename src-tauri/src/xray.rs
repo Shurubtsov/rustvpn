@@ -673,7 +673,13 @@ impl XrayManager {
         // - WiFi: register WARP in background (if not cached), connect directly
         // - Cellular + warp.json exists: chain through WARP
         // - Cellular + no warp.json: connect directly with warning
-        let is_cellular = app.vpn().is_cellular_network().unwrap_or(false);
+        let cellular_check = app.vpn().is_cellular_network();
+        let is_cellular = cellular_check.as_ref().copied().unwrap_or(false);
+        push_log_entry(
+            &self.logs,
+            "info",
+            &format!("[warp] Network: is_cellular={:?}", cellular_check),
+        );
         let warp = if is_cellular {
             let cfg = crate::warp::load_warp_config(app);
             if cfg.is_some() {
@@ -687,9 +693,12 @@ impl XrayManager {
             }
             cfg
         } else {
-            // WiFi — register WARP in background for future cellular use
-            crate::warp::register_in_background(app);
-            push_log_entry(&self.logs, "info", "[warp] WiFi: connecting directly");
+            crate::warp::register_in_background(app, &self.logs);
+            push_log_entry(
+                &self.logs,
+                "info",
+                "[warp] WiFi: connecting directly, WARP registering in background",
+            );
             None
         };
 

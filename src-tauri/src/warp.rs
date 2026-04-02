@@ -1,15 +1,36 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, Runtime};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::models::AppError;
+use crate::models::{AppError, LogEntry};
 
 const WARP_API_BASE: &str = "https://api.cloudflareclient.com/v0a884/reg";
 const WARP_CONFIG_FILE: &str = "warp.json";
+
+/// Push a log entry into the app's log buffer (visible on the Logs page).
+fn push_log(logs: &Arc<Mutex<VecDeque<LogEntry>>>, level: &str, msg: &str) {
+    eprintln!("{msg}");
+    let entry = LogEntry {
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        level: level.to_string(),
+        message: msg.to_string(),
+    };
+    if let Ok(mut buffer) = logs.lock() {
+        if buffer.len() >= 1000 {
+            buffer.pop_front();
+        }
+        buffer.push_back(entry);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarpConfig {
@@ -32,43 +53,56 @@ pub fn load_warp_config<R: Runtime>(app: &AppHandle<R>) -> Option<WarpConfig> {
     serde_json::from_str(&data).ok()
 }
 
-
 /// Register WARP in the background — only call this when on WiFi.
-/// On cellular, the Cloudflare API may be unreachable (blocked/slow).
-pub fn register_in_background<R: Runtime>(app: &AppHandle<R>) {
+/// Logs progress and results to the app's log buffer (visible on Logs page).
+pub fn register_in_background<R: Runtime>(
+    app: &AppHandle<R>,
+    logs: &Arc<Mutex<VecDeque<LogEntry>>>,
+) {
     if load_warp_config(app).is_some() {
-        log::info!("[warp] Already registered, skipping");
+        push_log(logs, "info", "[warp] Already registered, skipping");
         return;
     }
 
     let config_dir = match app.path().app_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            log::error!("[warp] app_config_dir failed: {e}");
+            push_log(logs, "error", &format!("[warp] app_config_dir failed: {e}"));
             return;
         }
     };
     let path = config_dir.join(WARP_CONFIG_FILE);
+    let logs_ref = logs.clone();
 
     std::thread::spawn(move || {
-        log::info!("[warp] Registering with Cloudflare WARP API...");
+        push_log(&logs_ref, "info", "[warp] Registering with Cloudflare...");
         match register_warp() {
             Ok(config) => {
                 let _ = fs::create_dir_all(path.parent().unwrap());
                 match serde_json::to_string_pretty(&config) {
                     Ok(data) => {
-                        let _ = fs::write(&path, data);
-                        log::info!(
-                            "[warp] Registered: device_id={}, endpoint={}, addr={}",
-                            config.device_id,
-                            config.endpoint,
-                            config.address_v4
+                        let _ = fs::write(&path, &data);
+                        push_log(
+                            &logs_ref,
+                            "info",
+                            &format!(
+                                "[warp] Registered OK: endpoint={}, addr={}",
+                                config.endpoint, config.address_v4
+                            ),
                         );
                     }
-                    Err(e) => log::error!("[warp] Failed to save config: {e}"),
+                    Err(e) => push_log(
+                        &logs_ref,
+                        "error",
+                        &format!("[warp] Failed to save config: {e}"),
+                    ),
                 }
             }
-            Err(e) => log::error!("[warp] Registration failed: {e}"),
+            Err(e) => push_log(
+                &logs_ref,
+                "error",
+                &format!("[warp] Registration failed: {e}"),
+            ),
         }
     });
 }
@@ -147,8 +181,6 @@ fn register_warp() -> Result<WarpConfig, AppError> {
     })
 }
 
-/// Parse the client_id field into 3 reserved bytes.
-/// client_id is base64-encoded; decode and take first 3 bytes.
 fn parse_client_id(value: &serde_json::Value) -> [u8; 3] {
     if let Some(s) = value.as_str() {
         let padded = match s.len() % 4 {
