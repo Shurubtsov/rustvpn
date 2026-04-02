@@ -13,20 +13,32 @@ const WARP_CONFIG_FILE: &str = "warp.json";
 const WARP_LOG_FILE: &str = "warp_log.txt";
 
 /// Append a timestamped line to warp_log.txt for debugging.
-/// Works in release builds (unlike log::info which needs the logger plugin).
+/// Writes to both config_dir and /sdcard/ (readable via adb pull).
 fn warp_log(config_dir: &std::path::Path, msg: &str) {
     use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{ts}] {msg}\n");
+
+    // Write to app config dir
     let path = config_dir.join(WARP_LOG_FILE);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{ts}] {msg}");
+        let _ = f.write_all(line.as_bytes());
+    }
+
+    // Also write to /sdcard/ so adb pull can read it without root
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/sdcard/warp_log.txt")
+    {
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
