@@ -131,9 +131,12 @@ jobs:
           BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
           "${BUILD_TOOLS}zipalign" -v -p 4 "$APK" /tmp/aligned.apk
           "${BUILD_TOOLS}apksigner" sign \
-            --ks /tmp/debug.keystore --ks-alias debug \
-            --ks-pass pass:android --key-pass pass:android \
-            --out release-assets/RustVPN-test.apk /tmp/aligned.apk
+            --ks /tmp/debug.keystore \
+            --ks-key-alias debug \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out release-assets/RustVPN-test.apk \
+            /tmp/aligned.apk
           "${BUILD_TOOLS}apksigner" verify release-assets/RustVPN-test.apk
 
       - name: Upload APK
