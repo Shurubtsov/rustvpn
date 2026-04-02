@@ -24,6 +24,10 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 uuid = { version = "1", features = ["v4"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand = "0.8"
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
 tauri-plugin-vpn = { path = "./tauri-plugin-vpn" }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

@@ -11,6 +11,7 @@ pub mod tray;
 #[cfg(target_os = "linux")]
 pub mod tun;
 pub mod uri;
+pub mod warp;
 pub mod xray;
 
 use tauri::Manager;

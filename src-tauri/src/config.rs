@@ -1,9 +1,11 @@
 use serde_json::{json, Value};
 
 use crate::models::{AppError, DpiBypassSettings, ServerConfig};
+use crate::warp::WarpConfig;
 
 pub const STATS_API_ADDR: &str = "127.0.0.1:10085";
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate_client_config(
     server: &ServerConfig,
     socks_port: u16,
@@ -12,6 +14,7 @@ pub fn generate_client_config(
     send_through: Option<&str>,
     vpn_dns_servers: &[String],
     dpi_bypass: &DpiBypassSettings,
+    warp_config: Option<&WarpConfig>,
 ) -> Result<String, AppError> {
     // In TUN mode, skip localhost DNS entirely. The system resolver calls getaddrinfo()
     // which goes through /etc/resolv.conf — corporate VPNs push their own DNS server
@@ -172,6 +175,49 @@ pub fn generate_client_config(
         }
     }
 
+    // Inject WARP WireGuard outbound + dialerProxy for mobile internet IP bypass
+    if let Some(warp) = warp_config {
+        if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+            // Add WireGuard outbound for WARP
+            outbounds.push(json!({
+                "tag": "warp",
+                "protocol": "wireguard",
+                "settings": {
+                    "secretKey": warp.private_key,
+                    "address": [
+                        format!("{}/32", warp.address_v4),
+                        format!("{}/128", warp.address_v6)
+                    ],
+                    "peers": [{
+                        "publicKey": warp.peer_public_key,
+                        "allowedIPs": ["0.0.0.0/0", "::/0"],
+                        "endpoint": warp.endpoint
+                    }],
+                    "reserved": warp.reserved,
+                    "mtu": 1280
+                }
+            }));
+
+            // Add dialerProxy to proxy outbound's sockopt
+            for outbound in outbounds.iter_mut() {
+                if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
+                    let sockopt = outbound
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("streamSettings")
+                        .or_insert(json!({}))
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("sockopt")
+                        .or_insert(json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    sockopt.insert("dialerProxy".to_string(), json!("warp"));
+                }
+            }
+        }
+    }
+
     // On Linux with TUN mode, bind outbound connections to the physical interface IP
     // so that `ip rule add from <local_ip> lookup main` routes them through the
     // physical interface, bypassing the TUN default route and preventing loops.
@@ -326,6 +372,7 @@ pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> 
 mod tests {
     use super::*;
     use crate::models::{DpiBypassSettings, RealitySettings};
+    use crate::warp::WarpConfig;
 
     #[test]
     fn test_generate_config() {
@@ -352,6 +399,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -399,6 +447,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -417,6 +466,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -445,6 +495,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -466,6 +517,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -485,6 +537,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -515,6 +568,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -550,6 +604,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let parsed: Result<Value, _> = serde_json::from_str(&config_str);
@@ -578,6 +633,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -615,6 +671,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -637,6 +694,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -658,6 +716,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -682,6 +741,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -720,6 +780,7 @@ mod tests {
             Some("192.168.1.100"),
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -776,6 +837,7 @@ mod tests {
             Some("192.168.1.100"),
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -807,6 +869,7 @@ mod tests {
             Some("192.168.1.100"),
             &vpn_dns,
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -835,6 +898,7 @@ mod tests {
             Some("192.168.1.100"),
             &vpn_dns,
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -859,6 +923,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -888,6 +953,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -912,6 +978,7 @@ mod tests {
             Some("192.168.1.50"),
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -934,6 +1001,7 @@ mod tests {
             None,
             &[],
             &DpiBypassSettings::default(),
+            None,
         )
         .unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -950,7 +1018,8 @@ mod tests {
             enabled: false,
             ..DpiBypassSettings::default()
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config_str =
+            generate_client_config(&server, 10808, &[], &[], None, &[], &dpi, None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         // No sockopt.fragment when DPI bypass is disabled
@@ -970,7 +1039,8 @@ mod tests {
             length: "100-200".to_string(),
             interval: "10-20".to_string(),
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config_str =
+            generate_client_config(&server, 10808, &[], &[], None, &[], &dpi, None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let fragment = &config["outbounds"][0]["streamSettings"]["sockopt"]["fragment"];
@@ -988,7 +1058,8 @@ mod tests {
             length: "100-200".to_string(),
             interval: "10-20".to_string(),
         };
-        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[], &dpi).unwrap();
+        let config_str =
+            generate_client_config(&server, 10808, &[], &[], None, &[], &dpi, None).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let outbounds = config["outbounds"].as_array().unwrap();
@@ -1002,5 +1073,80 @@ mod tests {
                 "non-proxy outbound should not have fragment"
             );
         }
+    }
+
+    #[test]
+    fn test_config_warp_injects_wireguard_and_dialer_proxy() {
+        let server = ServerConfig::default();
+        let warp = WarpConfig {
+            private_key: "dGVzdHByaXZhdGVrZXk=".to_string(),
+            address_v4: "172.16.0.2".to_string(),
+            address_v6: "fd01::2".to_string(),
+            peer_public_key: "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=".to_string(),
+            endpoint: "engage.cloudflareclient.com:2408".to_string(),
+            reserved: [1, 2, 3],
+            device_id: "test".to_string(),
+            access_token: "test".to_string(),
+        };
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings::default(),
+            Some(&warp),
+        )
+        .unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        // Verify WireGuard outbound exists
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let wg = outbounds
+            .iter()
+            .find(|o| o.get("tag").and_then(|t| t.as_str()) == Some("warp"))
+            .expect("warp outbound must exist");
+        assert_eq!(wg["protocol"], "wireguard");
+        assert_eq!(
+            wg["settings"]["peers"][0]["publicKey"],
+            "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+        );
+        assert_eq!(wg["settings"]["mtu"], 1280);
+
+        // Verify dialerProxy on proxy outbound
+        let proxy = &outbounds[0];
+        assert_eq!(
+            proxy["streamSettings"]["sockopt"]["dialerProxy"], "warp",
+            "proxy outbound must have dialerProxy=warp"
+        );
+    }
+
+    #[test]
+    fn test_config_no_warp_when_none() {
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(
+            &server,
+            10808,
+            &[],
+            &[],
+            None,
+            &[],
+            &DpiBypassSettings {
+                enabled: false,
+                ..DpiBypassSettings::default()
+            },
+            None,
+        )
+        .unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let outbounds = config["outbounds"].as_array().unwrap();
+        assert!(
+            !outbounds
+                .iter()
+                .any(|o| o.get("tag").and_then(|t| t.as_str()) == Some("warp")),
+            "no warp outbound when warp_config is None"
+        );
     }
 }

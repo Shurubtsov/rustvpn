@@ -1,7 +1,10 @@
 package com.rustvpn.vpn
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
@@ -88,6 +91,22 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
             put("tun_active", RustVpnService.tunActive)
         }
         invoke.resolve(result)
+    }
+
+    @Command
+    fun isCellularNetwork(invoke: Invoke) {
+        try {
+            val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = cm.activeNetwork
+            val caps = network?.let { cm.getNetworkCapabilities(it) }
+            val cellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+            val result = JSObject().apply {
+                put("cellular", cellular)
+            }
+            invoke.resolve(result)
+        } catch (e: Exception) {
+            invoke.reject("Network detection failed: ${e.message}")
+        }
     }
 
     @Command

@@ -198,6 +198,7 @@ impl XrayManager {
             send_through,
             &vpn_dns_servers,
             dpi_bypass,
+            None,
         )?;
 
         // Write config to temp file
@@ -668,6 +669,26 @@ impl XrayManager {
     ) -> Result<(), AppError> {
         use tauri_plugin_vpn::VpnPluginExt;
 
+        // On cellular networks, chain through Cloudflare WARP to bypass IP-level blocking.
+        // MTS and other Russian carriers block VPN server IPs at the TCP level; WARP hides
+        // the real destination behind Cloudflare's IPs.
+        let warp = match app.vpn().is_cellular_network() {
+            Ok(true) => {
+                info!("Cellular network detected, enabling WARP chain");
+                match crate::warp::load_or_register(app) {
+                    Ok(cfg) => Some(cfg),
+                    Err(e) => {
+                        warn!("WARP registration failed, connecting without WARP: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("WiFi/other network detected, connecting directly");
+                None
+            }
+        };
+
         // Generate xray config (no bypass subnets on mobile)
         let mut config_json = generate_client_config(
             server,
@@ -677,6 +698,7 @@ impl XrayManager {
             None,
             &[],
             dpi_bypass,
+            warp.as_ref(),
         )?;
 
         // Apply Android-specific modifications
