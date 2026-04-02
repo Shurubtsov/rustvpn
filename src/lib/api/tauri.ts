@@ -78,3 +78,7 @@ export async function updateSettings(settings: AppSettings): Promise<void> {
 export async function detectVpnInterfaces(): Promise<DetectedVpn[]> {
 	return await invoke<DetectedVpn[]>('detect_vpn_interfaces');
 }
+
+export async function getWarpLog(): Promise<string> {
+	return await invoke<string>('get_warp_log');
+}

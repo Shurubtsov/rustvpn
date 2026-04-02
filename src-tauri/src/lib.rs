@@ -115,6 +115,7 @@ pub fn run() {
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
             commands::detect_vpn_interfaces,
+            commands::get_warp_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

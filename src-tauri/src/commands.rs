@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::models::{
     AppSettings, ConnectionInfo, ConnectionStatus, DetectedVpn, LogEntry, ServerConfig, SpeedStats,
@@ -160,6 +160,27 @@ pub fn get_logs(manager: State<'_, XrayManager>) -> Result<Vec<LogEntry>, String
 pub fn clear_logs(manager: State<'_, XrayManager>) -> Result<(), String> {
     manager.clear_logs();
     Ok(())
+}
+
+// WARP debug
+#[tauri::command]
+pub fn get_warp_log<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("no config dir: {e}"))?;
+    let log_path = config_dir.join("warp_log.txt");
+    let warp_json = config_dir.join("warp.json");
+    let mut result = format!("config_dir: {}\n", config_dir.display());
+    result += &format!("warp.json exists: {}\n", warp_json.exists());
+    result += &format!("warp_log.txt exists: {}\n", log_path.exists());
+    if log_path.exists() {
+        result +=
+            &std::fs::read_to_string(&log_path).unwrap_or_else(|e| format!("read error: {e}"));
+    } else {
+        result += "No log file yet";
+    }
+    Ok(result)
 }
 
 // Settings
