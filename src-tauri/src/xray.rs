@@ -672,21 +672,27 @@ impl XrayManager {
         // On cellular networks, chain through Cloudflare WARP to bypass IP-level blocking.
         // MTS and other Russian carriers block VPN server IPs at the TCP level; WARP hides
         // the real destination behind Cloudflare's IPs.
-        let warp = match app.vpn().is_cellular_network() {
-            Ok(true) => {
-                info!("Cellular network detected, enabling WARP chain");
-                match crate::warp::load_or_register(app) {
-                    Ok(cfg) => Some(cfg),
-                    Err(e) => {
-                        warn!("WARP registration failed, connecting without WARP: {e}");
-                        None
-                    }
+        // On cellular networks, chain through Cloudflare WARP to bypass IP-level blocking.
+        // Default to using WARP on mobile — if network detection fails, still try WARP
+        // since it's harmless on WiFi but essential on cellular.
+        let is_cellular = app.vpn().is_cellular_network().unwrap_or(true);
+        let warp = if is_cellular {
+            match crate::warp::load_or_register(app) {
+                Ok(cfg) => {
+                    info!(
+                        "WARP chain enabled: endpoint={}, addr={}",
+                        cfg.endpoint, cfg.address_v4
+                    );
+                    Some(cfg)
+                }
+                Err(e) => {
+                    warn!("WARP registration failed, connecting directly: {e}");
+                    None
                 }
             }
-            _ => {
-                info!("WiFi/other network detected, connecting directly");
-                None
-            }
+        } else {
+            info!("WiFi detected, connecting directly (no WARP)");
+            None
         };
 
         // Generate xray config (no bypass subnets on mobile)
