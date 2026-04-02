@@ -48,6 +48,11 @@ pub fn run() {
 
             app.manage(XrayManager::new());
 
+            // On mobile, pre-register WARP in background so credentials are
+            // ready by the time the user connects. Non-blocking.
+            #[cfg(mobile)]
+            warp::ensure_registered(app.handle());
+
             let handle = app.handle().clone();
 
             // Setup system tray (desktop only — mobile has no tray)

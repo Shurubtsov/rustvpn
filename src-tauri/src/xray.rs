@@ -669,29 +669,35 @@ impl XrayManager {
     ) -> Result<(), AppError> {
         use tauri_plugin_vpn::VpnPluginExt;
 
-        // On cellular networks, chain through Cloudflare WARP to bypass IP-level blocking.
-        // MTS and other Russian carriers block VPN server IPs at the TCP level; WARP hides
-        // the real destination behind Cloudflare's IPs.
-        // On cellular networks, chain through Cloudflare WARP to bypass IP-level blocking.
-        // Default to using WARP on mobile — if network detection fails, still try WARP
-        // since it's harmless on WiFi but essential on cellular.
-        let is_cellular = app.vpn().is_cellular_network().unwrap_or(true);
+        // Load cached WARP config (non-blocking). Registration happens at app startup
+        // via ensure_registered(). If not ready yet, connect directly.
+        let cellular_result = app.vpn().is_cellular_network();
+        let is_cellular = cellular_result.as_ref().copied().unwrap_or(true);
+        {
+            let msg = match &cellular_result {
+                Ok(true) => "[warp] Cellular network detected".to_string(),
+                Ok(false) => "[warp] WiFi detected, skipping WARP".to_string(),
+                Err(e) => format!("[warp] Network detection failed ({e}), assuming cellular"),
+            };
+            push_log_entry(&self.logs, "info", &msg);
+        }
         let warp = if is_cellular {
-            match crate::warp::load_or_register(app) {
-                Ok(cfg) => {
-                    info!(
-                        "WARP chain enabled: endpoint={}, addr={}",
-                        cfg.endpoint, cfg.address_v4
-                    );
-                    Some(cfg)
-                }
-                Err(e) => {
-                    warn!("WARP registration failed, connecting directly: {e}");
-                    None
-                }
+            let cfg = crate::warp::load_warp_config(app);
+            if cfg.is_some() {
+                push_log_entry(
+                    &self.logs,
+                    "info",
+                    "[warp] WARP config loaded, chaining enabled",
+                );
+            } else {
+                push_log_entry(
+                    &self.logs,
+                    "warning",
+                    "[warp] No WARP config yet (still registering?), connecting directly",
+                );
             }
+            cfg
         } else {
-            info!("WiFi detected, connecting directly (no WARP)");
             None
         };
 

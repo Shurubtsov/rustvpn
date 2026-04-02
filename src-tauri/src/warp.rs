@@ -10,6 +10,25 @@ use crate::models::AppError;
 
 const WARP_API_BASE: &str = "https://api.cloudflareclient.com/v0a884/reg";
 const WARP_CONFIG_FILE: &str = "warp.json";
+const WARP_LOG_FILE: &str = "warp_log.txt";
+
+/// Append a timestamped line to warp_log.txt for debugging.
+/// Works in release builds (unlike log::info which needs the logger plugin).
+fn warp_log(config_dir: &std::path::Path, msg: &str) {
+    use std::io::Write;
+    let path = config_dir.join(WARP_LOG_FILE);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarpConfig {
@@ -45,25 +64,44 @@ pub fn save_warp_config<R: Runtime>(
     Ok(())
 }
 
-/// Load existing WARP config or register a new one.
-pub fn load_or_register<R: Runtime>(app: &AppHandle<R>) -> Result<WarpConfig, AppError> {
-    if let Some(config) = load_warp_config(app) {
-        log::info!(
-            "Loaded existing WARP config (device_id={})",
-            config.device_id
-        );
-        return Ok(config);
+/// Ensure WARP credentials exist — register in background if missing.
+/// Call this at app startup on mobile. Non-blocking.
+pub fn ensure_registered<R: Runtime>(app: &AppHandle<R>) {
+    if load_warp_config(app).is_some() {
+        return; // Already registered
     }
 
-    log::info!("No WARP config found, registering new device...");
-    let config = register_warp()?;
-    save_warp_config(app, &config)?;
-    log::info!(
-        "WARP registered: device_id={}, endpoint={}",
-        config.device_id,
-        config.endpoint
-    );
-    Ok(config)
+    let config_dir = match app.path().app_config_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let path = config_dir.join(WARP_CONFIG_FILE);
+
+    let log_dir = config_dir.clone();
+    std::thread::spawn(move || {
+        warp_log(&log_dir, "Starting background registration...");
+        match register_warp(&log_dir) {
+            Ok(config) => {
+                let _ = std::fs::create_dir_all(path.parent().unwrap());
+                match serde_json::to_string_pretty(&config) {
+                    Ok(data) => {
+                        let _ = std::fs::write(&path, data);
+                        warp_log(
+                            &log_dir,
+                            &format!(
+                                "OK: device_id={}, endpoint={}, addr={}",
+                                config.device_id, config.endpoint, config.address_v4
+                            ),
+                        );
+                    }
+                    Err(e) => warp_log(&log_dir, &format!("ERROR serializing config: {e}")),
+                }
+            }
+            Err(e) => {
+                warp_log(&log_dir, &format!("ERROR registration failed: {e}"));
+            }
+        }
+    });
 }
 
 fn warp_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, AppError> {
@@ -75,12 +113,17 @@ fn warp_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, AppError>
 }
 
 /// Register a new device with the Cloudflare WARP API and return a WarpConfig.
-fn register_warp() -> Result<WarpConfig, AppError> {
+fn register_warp(log_dir: &std::path::Path) -> Result<WarpConfig, AppError> {
     // Generate x25519 keypair
     let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let public = PublicKey::from(&secret);
     let private_key_b64 = BASE64.encode(secret.as_bytes());
     let public_key_b64 = BASE64.encode(public.as_bytes());
+
+    warp_log(
+        log_dir,
+        &format!("Generated keypair, pubkey={public_key_b64}"),
+    );
 
     // Register with WARP API
     let reg_body = serde_json::json!({
@@ -93,21 +136,47 @@ fn register_warp() -> Result<WarpConfig, AppError> {
         "locale": "en_US"
     });
 
-    let resp: serde_json::Value = ureq::post(WARP_API_BASE)
+    warp_log(log_dir, &format!("POST {WARP_API_BASE}"));
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let resp: serde_json::Value = agent
+        .post(WARP_API_BASE)
         .set("Content-Type", "application/json")
         .set("CF-Client-Version", "a-7.21-0721")
         .send_json(&reg_body)
-        .map_err(|e| AppError::Config(format!("WARP registration failed: {e}")))?
+        .map_err(|e| {
+            warp_log(log_dir, &format!("POST failed: {e}"));
+            AppError::Config(format!("WARP registration failed: {e}"))
+        })?
         .into_json()
-        .map_err(|e| AppError::Config(format!("WARP registration parse error: {e}")))?;
+        .map_err(|e| {
+            warp_log(log_dir, &format!("JSON parse failed: {e}"));
+            AppError::Config(format!("WARP registration parse error: {e}"))
+        })?;
+
+    warp_log(
+        log_dir,
+        &format!(
+            "Response keys: {:?}",
+            resp.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        ),
+    );
 
     let device_id = resp["id"]
         .as_str()
-        .ok_or_else(|| AppError::Config("WARP response missing 'id'".to_string()))?
+        .ok_or_else(|| {
+            warp_log(log_dir, &format!("Missing 'id' in response: {resp}"));
+            AppError::Config("WARP response missing 'id'".to_string())
+        })?
         .to_string();
     let access_token = resp["token"]
         .as_str()
-        .ok_or_else(|| AppError::Config("WARP response missing 'token'".to_string()))?
+        .ok_or_else(|| {
+            warp_log(log_dir, "Missing 'token' in response");
+            AppError::Config("WARP response missing 'token'".to_string())
+        })?
         .to_string();
 
     // The registration response already contains the full config
@@ -150,18 +219,22 @@ fn register_warp() -> Result<WarpConfig, AppError> {
 }
 
 /// Parse the client_id field into 3 reserved bytes.
-/// client_id is a short hex string (e.g. "a8cc"); decode to bytes, pad to 3.
+/// client_id is base64-encoded; decode and take first 3 bytes.
 fn parse_client_id(value: &serde_json::Value) -> [u8; 3] {
     if let Some(s) = value.as_str() {
-        let bytes: Vec<u8> = (0..s.len())
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-            .collect();
-        let mut result = [0u8; 3];
-        for (i, &b) in bytes.iter().take(3).enumerate() {
-            result[i] = b;
+        // Try base64 first (may need padding)
+        let padded = match s.len() % 4 {
+            2 => format!("{s}=="),
+            3 => format!("{s}="),
+            _ => s.to_string(),
+        };
+        if let Ok(bytes) = BASE64.decode(&padded) {
+            let mut result = [0u8; 3];
+            for (i, &b) in bytes.iter().take(3).enumerate() {
+                result[i] = b;
+            }
+            return result;
         }
-        return result;
     }
     [0, 0, 0]
 }
@@ -171,14 +244,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_client_id_valid() {
-        let val = serde_json::json!("a8cc");
-        assert_eq!(parse_client_id(&val), [0xa8, 0xcc, 0]);
+    fn parse_client_id_base64() {
+        // base64 of [0xe7, 0x02, 0xeb] = "5wLr"
+        let val = serde_json::json!("5wLr");
+        assert_eq!(parse_client_id(&val), [0xe7, 0x02, 0xeb]);
     }
 
     #[test]
-    fn parse_client_id_three_bytes() {
-        let val = serde_json::json!("010203");
+    fn parse_client_id_padded() {
+        // "AQID" = base64 of [1, 2, 3]
+        let val = serde_json::json!("AQID");
         assert_eq!(parse_client_id(&val), [1, 2, 3]);
     }
 
