@@ -79,23 +79,21 @@ pub fn save_warp_config<R: Runtime>(
 /// Ensure WARP credentials exist — register in background if missing.
 /// Call this at app startup on mobile. Non-blocking.
 pub fn ensure_registered<R: Runtime>(app: &AppHandle<R>) {
-    // Always write a breadcrumb so we know this function was called
-    let sdcard = std::path::PathBuf::from("/sdcard");
-    warp_log(&sdcard, "ensure_registered called");
+    log::info!("[warp] ensure_registered called");
 
     let config_dir = match app.path().app_config_dir() {
         Ok(d) => {
-            warp_log(&sdcard, &format!("config_dir: {}", d.display()));
+            log::info!("[warp] config_dir: {}", d.display());
             d
         }
         Err(e) => {
-            warp_log(&sdcard, &format!("ERROR: app_config_dir failed: {e}"));
+            log::error!("[warp] app_config_dir failed: {e}");
             return;
         }
     };
 
     if load_warp_config(app).is_some() {
-        warp_log(&sdcard, "warp.json already exists, skipping registration");
+        log::info!("[warp] warp.json already exists, skipping registration");
         return;
     }
 
