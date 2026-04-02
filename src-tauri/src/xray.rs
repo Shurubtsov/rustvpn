@@ -669,35 +669,27 @@ impl XrayManager {
     ) -> Result<(), AppError> {
         use tauri_plugin_vpn::VpnPluginExt;
 
-        // Load cached WARP config (non-blocking). Registration happens at app startup
-        // via ensure_registered(). If not ready yet, connect directly.
-        let cellular_result = app.vpn().is_cellular_network();
-        let is_cellular = cellular_result.as_ref().copied().unwrap_or(true);
-        {
-            let msg = match &cellular_result {
-                Ok(true) => "[warp] Cellular network detected".to_string(),
-                Ok(false) => "[warp] WiFi detected, skipping WARP".to_string(),
-                Err(e) => format!("[warp] Network detection failed ({e}), assuming cellular"),
-            };
-            push_log_entry(&self.logs, "info", &msg);
-        }
+        // WARP chain logic:
+        // - WiFi: register WARP in background (if not cached), connect directly
+        // - Cellular + warp.json exists: chain through WARP
+        // - Cellular + no warp.json: connect directly with warning
+        let is_cellular = app.vpn().is_cellular_network().unwrap_or(false);
         let warp = if is_cellular {
             let cfg = crate::warp::load_warp_config(app);
             if cfg.is_some() {
-                push_log_entry(
-                    &self.logs,
-                    "info",
-                    "[warp] WARP config loaded, chaining enabled",
-                );
+                push_log_entry(&self.logs, "info", "[warp] Cellular: WARP chain enabled");
             } else {
                 push_log_entry(
                     &self.logs,
                     "warning",
-                    "[warp] No WARP config yet (still registering?), connecting directly",
+                    "[warp] Cellular: no WARP credentials. Connect on WiFi first to register WARP for mobile internet bypass.",
                 );
             }
             cfg
         } else {
+            // WiFi — register WARP in background for future cellular use
+            crate::warp::register_in_background(app);
+            push_log_entry(&self.logs, "info", "[warp] WiFi: connecting directly");
             None
         };
 
