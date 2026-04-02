@@ -115,13 +115,26 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: pnpm tauri android build --apk
 
-      - name: Collect APK
+      - name: Sign APK
         run: |
           mkdir -p release-assets
           APK=$(find src-tauri/gen/android -name "*.apk" | head -1)
-          if [ -n "$APK" ]; then
-            cp "$APK" "release-assets/RustVPN-test.apk"
-          fi
+          if [ -z "$APK" ]; then echo "No APK found"; exit 1; fi
+
+          # Generate debug keystore
+          keytool -genkey -v -keystore /tmp/debug.keystore -alias debug \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=RustVPN Test"
+
+          # Align and sign
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          "${BUILD_TOOLS}zipalign" -v -p 4 "$APK" /tmp/aligned.apk
+          "${BUILD_TOOLS}apksigner" sign \
+            --ks /tmp/debug.keystore --ks-alias debug \
+            --ks-pass pass:android --key-pass pass:android \
+            --out release-assets/RustVPN-test.apk /tmp/aligned.apk
+          "${BUILD_TOOLS}apksigner" verify release-assets/RustVPN-test.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
