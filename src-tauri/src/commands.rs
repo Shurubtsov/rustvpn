@@ -162,7 +162,24 @@ pub fn clear_logs(manager: State<'_, XrayManager>) -> Result<(), String> {
     Ok(())
 }
 
-// WARP debug
+// WARP
+#[tauri::command]
+pub async fn register_warp<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    if crate::warp::load_warp_config(&app).is_some() {
+        return Ok("WARP already registered".to_string());
+    }
+    crate::warp::do_register_sync(&app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_warp_status<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    if crate::warp::load_warp_config(&app).is_some() {
+        Ok("registered".to_string())
+    } else {
+        Ok("not_registered".to_string())
+    }
+}
+
 #[tauri::command]
 pub fn get_warp_log<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
     let config_dir = app

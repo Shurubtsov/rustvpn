@@ -47,10 +47,6 @@ pub fn run() {
 
             app.manage(XrayManager::new());
 
-            // Register WARP at startup (before any VPN is active).
-            // The HTTP call goes directly to the internet, no routing conflict.
-            warp::register_at_startup(app.handle());
-
             let handle = app.handle().clone();
 
             // Setup system tray (desktop only — mobile has no tray)
@@ -113,6 +109,8 @@ pub fn run() {
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
             commands::detect_vpn_interfaces,
+            commands::register_warp,
+            commands::get_warp_status,
             commands::get_warp_log,
         ])
         .run(tauri::generate_context!())

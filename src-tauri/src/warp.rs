@@ -105,6 +105,16 @@ pub fn register_in_background<R: Runtime + 'static>(
     });
 }
 
+/// Called by the register_warp Tauri command (button press).
+pub fn do_register_sync<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir: {e}"))?;
+    let path = config_dir.join(WARP_CONFIG_FILE);
+    do_register(app, &path)
+}
+
 /// Shared registration logic: generate keys, call Kotlin HTTP, parse, save.
 fn do_register<R: Runtime>(app: &AppHandle<R>, path: &std::path::Path) -> Result<String, String> {
     use tauri_plugin_vpn::VpnPluginExt;
