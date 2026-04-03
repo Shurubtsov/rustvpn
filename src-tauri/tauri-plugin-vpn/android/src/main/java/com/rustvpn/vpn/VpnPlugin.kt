@@ -22,6 +22,11 @@ class StartVpnArgs {
     var serverAddress: String = ""
 }
 
+@InvokeArg
+class RegisterWarpArgs {
+    var publicKey: String = ""
+}
+
 @TauriPlugin
 class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
@@ -111,15 +116,13 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun registerWarp(invoke: Invoke) {
+        val args = invoke.parseArgs(RegisterWarpArgs::class.java)
+        val publicKey = args.publicKey
+
         Thread {
             try {
-                val publicKey = invoke.getString("publicKey") ?: run {
-                    invoke.reject("Missing publicKey")
-                    return@Thread
-                }
-
                 val url = java.net.URL("https://api.cloudflareclient.com/v0a884/reg")
-                val conn = url.openConnection() as java.net.HttpsURLConnection
+                val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.setRequestProperty("CF-Client-Version", "a-7.21-0721")
@@ -128,7 +131,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
                 conn.doOutput = true
 
                 val body = """{"key":"$publicKey","install_id":"","fcm_token":"","tos":"2024-01-01T00:00:00+00:00","model":"PC","type":"Android","locale":"en_US"}"""
-                conn.outputStream.use { it.write(body.toByteArray()) }
+                conn.outputStream.use { os -> os.write(body.toByteArray()) }
 
                 val responseCode = conn.responseCode
                 if (responseCode != 200) {
