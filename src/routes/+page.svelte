@@ -197,9 +197,7 @@
 		if (isDesktop()) {
 			refreshVpnDetection();
 		}
-		if (isMobile()) {
-			checkWarpStatus();
-		}
+		checkWarpStatus();
 	});
 
 	onDestroy(() => {
@@ -272,8 +270,7 @@
 		</div>
 	</div>
 
-	<!-- WARP registration for mobile internet (mobile only) -->
-	{#if isMobile()}
+	<!-- WARP registration for mobile internet -->
 	<div class="flex items-center justify-between px-1">
 		<div class="flex items-center gap-2">
 			<span class="text-xs text-muted-foreground">WARP:</span>
@@ -297,7 +294,6 @@
 			</button>
 		{/if}
 	</div>
-	{/if}
 
 	<!-- Bypass domains (split tunneling) -->
 	<details class="group">
