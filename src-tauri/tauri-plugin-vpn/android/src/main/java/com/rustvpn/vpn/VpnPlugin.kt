@@ -123,8 +123,15 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
             val maxAttempts = 3
             for (attempt in 1..maxAttempts) {
                 try {
+                    // Route through xray SOCKS5 proxy (127.0.0.1:10808) to bypass
+                    // addDisallowedApplication exclusion. Without this, our app's
+                    // HTTP traffic bypasses the VPN and hits ISP blocks directly.
+                    val socksProxy = java.net.Proxy(
+                        java.net.Proxy.Type.SOCKS,
+                        java.net.InetSocketAddress("127.0.0.1", 10808)
+                    )
                     val url = java.net.URL("https://api.cloudflareclient.com/v0a884/reg")
-                    val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
+                    val conn = url.openConnection(socksProxy) as javax.net.ssl.HttpsURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
                     conn.setRequestProperty("CF-Client-Version", "a-7.21-0721")
