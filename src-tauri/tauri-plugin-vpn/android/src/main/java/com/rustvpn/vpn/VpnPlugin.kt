@@ -110,6 +110,43 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun registerWarp(invoke: Invoke) {
+        Thread {
+            try {
+                val publicKey = invoke.getString("publicKey") ?: run {
+                    invoke.reject("Missing publicKey")
+                    return@Thread
+                }
+
+                val url = java.net.URL("https://api.cloudflareclient.com/v0a884/reg")
+                val conn = url.openConnection() as java.net.HttpsURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("CF-Client-Version", "a-7.21-0721")
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                conn.doOutput = true
+
+                val body = """{"key":"$publicKey","install_id":"","fcm_token":"","tos":"2024-01-01T00:00:00+00:00","model":"PC","type":"Android","locale":"en_US"}"""
+                conn.outputStream.use { it.write(body.toByteArray()) }
+
+                val responseCode = conn.responseCode
+                if (responseCode != 200) {
+                    val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "no body"
+                    invoke.reject("WARP API returned $responseCode: $errorBody")
+                    return@Thread
+                }
+
+                val responseBody = conn.inputStream.bufferedReader().readText()
+                val result = JSObject(responseBody)
+                invoke.resolve(result)
+            } catch (e: Exception) {
+                invoke.reject("WARP registration failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    @Command
     fun queryStats(invoke: Invoke) {
         try {
             val controller = RustVpnService.xrayController

@@ -38,6 +38,10 @@ impl<R: tauri::Runtime> VpnPlugin<R> {
         Ok(VpnStats::default())
     }
 
+    pub fn register_warp(&self, _public_key: &str) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::NotSupported)
+    }
+
     pub fn is_cellular_network(&self) -> Result<bool, crate::Error> {
         Ok(false)
     }
