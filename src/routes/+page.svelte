@@ -275,13 +275,13 @@
 		<div class="flex items-center gap-2">
 			<span class="text-xs text-muted-foreground">WARP:</span>
 			{#if warpStatus === 'registered'}
-				<span class="text-xs text-green-500">Ready</span>
+				<span class="text-xs text-green-500">Ready for mobile internet</span>
 			{:else if warpStatus === 'registering'}
 				<span class="text-xs text-yellow-500">Registering...</span>
 			{:else if warpStatus === 'error'}
-				<span class="text-xs text-red-500" title={warpError ?? ''}>Failed</span>
+				<span class="text-xs text-red-500">Failed (try while VPN is connected)</span>
 			{:else}
-				<span class="text-xs text-muted-foreground/60">Not registered</span>
+				<span class="text-xs text-muted-foreground/60">Not set up</span>
 			{/if}
 		</div>
 		{#if warpStatus !== 'registered'}

@@ -120,31 +120,39 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         val publicKey = args.publicKey
 
         Thread {
-            try {
-                val url = java.net.URL("https://api.cloudflareclient.com/v0a884/reg")
-                val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("CF-Client-Version", "a-7.21-0721")
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-                conn.doOutput = true
+            val maxAttempts = 3
+            for (attempt in 1..maxAttempts) {
+                try {
+                    val url = java.net.URL("https://api.cloudflareclient.com/v0a884/reg")
+                    val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("CF-Client-Version", "a-7.21-0721")
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 15000
+                    conn.doOutput = true
 
-                val body = """{"key":"$publicKey","install_id":"","fcm_token":"","tos":"2024-01-01T00:00:00+00:00","model":"PC","type":"Android","locale":"en_US"}"""
-                conn.outputStream.use { os -> os.write(body.toByteArray()) }
+                    val body = """{"key":"$publicKey","install_id":"","fcm_token":"","tos":"2024-01-01T00:00:00+00:00","model":"PC","type":"Android","locale":"en_US"}"""
+                    conn.outputStream.use { os -> os.write(body.toByteArray()) }
 
-                val responseCode = conn.responseCode
-                if (responseCode != 200) {
-                    val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "no body"
-                    invoke.reject("WARP API returned $responseCode: $errorBody")
+                    val responseCode = conn.responseCode
+                    if (responseCode != 200) {
+                        val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "no body"
+                        invoke.reject("WARP API returned $responseCode: $errorBody")
+                        return@Thread
+                    }
+
+                    val responseBody = conn.inputStream.bufferedReader().readText()
+                    val result = JSObject(responseBody)
+                    invoke.resolve(result)
                     return@Thread
+                } catch (e: Exception) {
+                    if (attempt < maxAttempts) {
+                        Thread.sleep(2000)
+                    } else {
+                        invoke.reject("WARP registration failed after $maxAttempts attempts: ${e.message}")
+                    }
                 }
-
-                val responseBody = conn.inputStream.bufferedReader().readText()
-                val result = JSObject(responseBody)
-                invoke.resolve(result)
-            } catch (e: Exception) {
-                invoke.reject("WARP registration failed: ${e.message}")
             }
         }.start()
     }
