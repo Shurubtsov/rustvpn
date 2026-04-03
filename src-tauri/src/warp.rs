@@ -75,35 +75,57 @@ pub fn register_in_background<R: Runtime>(
     let logs_ref = logs.clone();
 
     std::thread::spawn(move || {
-        push_log(&logs_ref, "info", "[warp] Registering with Cloudflare...");
-        match register_warp() {
-            Ok(config) => {
-                let _ = fs::create_dir_all(path.parent().unwrap());
-                match serde_json::to_string_pretty(&config) {
-                    Ok(data) => {
-                        let _ = fs::write(&path, &data);
-                        push_log(
+        // Retry up to 3 times — rustls on Android sometimes fails with EAGAIN
+        // on the first TLS handshake attempt.
+        let max_attempts = 3;
+        for attempt in 1..=max_attempts {
+            push_log(
+                &logs_ref,
+                "info",
+                &format!(
+                    "[warp] Registering with Cloudflare (attempt {attempt}/{max_attempts})..."
+                ),
+            );
+            match register_warp() {
+                Ok(config) => {
+                    let _ = fs::create_dir_all(path.parent().unwrap());
+                    match serde_json::to_string_pretty(&config) {
+                        Ok(data) => {
+                            let _ = fs::write(&path, &data);
+                            push_log(
+                                &logs_ref,
+                                "info",
+                                &format!(
+                                    "[warp] Registered OK: endpoint={}, addr={}",
+                                    config.endpoint, config.address_v4
+                                ),
+                            );
+                        }
+                        Err(e) => push_log(
                             &logs_ref,
-                            "info",
-                            &format!(
-                                "[warp] Registered OK: endpoint={}, addr={}",
-                                config.endpoint, config.address_v4
-                            ),
-                        );
+                            "error",
+                            &format!("[warp] Failed to save config: {e}"),
+                        ),
                     }
-                    Err(e) => push_log(
+                    return;
+                }
+                Err(e) => {
+                    push_log(
                         &logs_ref,
-                        "error",
-                        &format!("[warp] Failed to save config: {e}"),
-                    ),
+                        "warning",
+                        &format!("[warp] Attempt {attempt} failed: {e}"),
+                    );
+                    if attempt < max_attempts {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
                 }
             }
-            Err(e) => push_log(
-                &logs_ref,
-                "error",
-                &format!("[warp] Registration failed: {e}"),
-            ),
         }
+        push_log(
+            &logs_ref,
+            "error",
+            "[warp] Registration failed after 3 attempts. Reconnect on WiFi to retry.",
+        );
     });
 }
 
