@@ -47,6 +47,10 @@ pub fn run() {
 
             app.manage(XrayManager::new());
 
+            // Register WARP at startup (before any VPN is active).
+            // The HTTP call goes directly to the internet, no routing conflict.
+            warp::register_at_startup(app.handle());
+
             let handle = app.handle().clone();
 
             // Setup system tray (desktop only — mobile has no tray)

@@ -12,7 +12,6 @@ use crate::models::{AppError, LogEntry};
 
 const WARP_CONFIG_FILE: &str = "warp.json";
 
-/// Push a log entry into the app's log buffer (visible on the Logs page).
 fn push_log(logs: &Arc<Mutex<VecDeque<LogEntry>>>, level: &str, msg: &str) {
     let entry = LogEntry {
         timestamp: std::time::SystemTime::now()
@@ -51,8 +50,29 @@ pub fn load_warp_config<R: Runtime>(app: &AppHandle<R>) -> Option<WarpConfig> {
     serde_json::from_str(&data).ok()
 }
 
-/// Register WARP in the background via the Android plugin's native HTTP.
-/// Only call on WiFi — cellular may block the Cloudflare API.
+/// Register WARP at app startup in background. No VPN active yet,
+/// so the HTTP call goes directly to the internet.
+pub fn register_at_startup<R: Runtime + 'static>(app: &AppHandle<R>) {
+    if load_warp_config(app).is_some() {
+        return;
+    }
+    let config_dir = match app.path().app_config_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let path = config_dir.join(WARP_CONFIG_FILE);
+    let app_handle = app.clone();
+
+    std::thread::spawn(move || {
+        eprintln!("[warp] Startup: registering with Cloudflare...");
+        match do_register(&app_handle, &path) {
+            Ok(msg) => eprintln!("[warp] Startup: {msg}"),
+            Err(e) => eprintln!("[warp] Startup: registration failed: {e}"),
+        }
+    });
+}
+
+/// Register WARP during WiFi connect. Logs to app Logs page.
 pub fn register_in_background<R: Runtime + 'static>(
     app: &AppHandle<R>,
     logs: &Arc<Mutex<VecDeque<LogEntry>>>,
@@ -61,108 +81,85 @@ pub fn register_in_background<R: Runtime + 'static>(
         push_log(logs, "info", "[warp] Already registered, skipping");
         return;
     }
-
     let config_dir = match app.path().app_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            push_log(logs, "error", &format!("[warp] app_config_dir failed: {e}"));
+            push_log(logs, "error", &format!("[warp] config dir failed: {e}"));
             return;
         }
     };
-
-    // Generate x25519 keypair
-    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let public = PublicKey::from(&secret);
-    let private_key_b64 = BASE64.encode(secret.as_bytes());
-    let public_key_b64 = BASE64.encode(public.as_bytes());
-
     let path = config_dir.join(WARP_CONFIG_FILE);
     let logs_ref = logs.clone();
     let app_handle = app.clone();
 
     std::thread::spawn(move || {
-        push_log(
-            &logs_ref,
-            "info",
-            "[warp] Registering with Cloudflare via Android HTTP...",
-        );
-
-        // Call Kotlin plugin to do the HTTP POST (uses Android's native TLS)
-        use tauri_plugin_vpn::VpnPluginExt;
-        let resp = match app_handle.vpn().register_warp(&public_key_b64) {
-            Ok(v) => v,
-            Err(e) => {
-                push_log(
-                    &logs_ref,
-                    "error",
-                    &format!("[warp] Registration failed: {e}"),
-                );
-                return;
-            }
-        };
-
-        // Parse response
-        let device_id = match resp["id"].as_str() {
-            Some(id) => id.to_string(),
-            None => {
-                push_log(
-                    &logs_ref,
-                    "error",
-                    &format!("[warp] Response missing 'id': {resp}"),
-                );
-                return;
-            }
-        };
-        let access_token = resp["token"].as_str().unwrap_or_default().to_string();
-
-        let config_section = &resp["config"];
-        let interface = &config_section["interface"];
-        let peer = &config_section["peers"][0];
-
-        let warp_config = WarpConfig {
-            private_key: private_key_b64,
-            address_v4: interface["addresses"]["v4"]
-                .as_str()
-                .unwrap_or("172.16.0.2")
-                .to_string(),
-            address_v6: interface["addresses"]["v6"]
-                .as_str()
-                .unwrap_or("fd01:db8:1111::2")
-                .to_string(),
-            peer_public_key: peer["public_key"]
-                .as_str()
-                .unwrap_or("bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=")
-                .to_string(),
-            endpoint: peer["endpoint"]["host"]
-                .as_str()
-                .unwrap_or("engage.cloudflareclient.com:2408")
-                .to_string(),
-            reserved: parse_client_id(&config_section["client_id"]),
-            device_id,
-            access_token,
-        };
-
-        // Save to disk
-        let _ = fs::create_dir_all(path.parent().unwrap());
-        match serde_json::to_string_pretty(&warp_config) {
-            Ok(data) => {
-                let _ = fs::write(&path, &data);
-                push_log(
-                    &logs_ref,
-                    "info",
-                    &format!(
-                        "[warp] Registered OK: endpoint={}, addr={}",
-                        warp_config.endpoint, warp_config.address_v4
-                    ),
-                );
-            }
+        push_log(&logs_ref, "info", "[warp] Registering with Cloudflare...");
+        match do_register(&app_handle, &path) {
+            Ok(msg) => push_log(&logs_ref, "info", &format!("[warp] {msg}")),
             Err(e) => push_log(
                 &logs_ref,
                 "error",
-                &format!("[warp] Failed to save config: {e}"),
+                &format!("[warp] Registration failed: {e}"),
             ),
         }
     });
+}
+
+/// Shared registration logic: generate keys, call Kotlin HTTP, parse, save.
+fn do_register<R: Runtime>(app: &AppHandle<R>, path: &std::path::Path) -> Result<String, String> {
+    use tauri_plugin_vpn::VpnPluginExt;
+
+    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let public = PublicKey::from(&secret);
+    let private_key_b64 = BASE64.encode(secret.as_bytes());
+    let public_key_b64 = BASE64.encode(public.as_bytes());
+
+    let resp = app
+        .vpn()
+        .register_warp(&public_key_b64)
+        .map_err(|e| format!("{e}"))?;
+
+    let device_id = resp["id"]
+        .as_str()
+        .ok_or_else(|| format!("Response missing 'id': {resp}"))?
+        .to_string();
+    let access_token = resp["token"].as_str().unwrap_or_default().to_string();
+
+    let config_section = &resp["config"];
+    let interface = &config_section["interface"];
+    let peer = &config_section["peers"][0];
+
+    let warp_config = WarpConfig {
+        private_key: private_key_b64,
+        address_v4: interface["addresses"]["v4"]
+            .as_str()
+            .unwrap_or("172.16.0.2")
+            .to_string(),
+        address_v6: interface["addresses"]["v6"]
+            .as_str()
+            .unwrap_or("fd01:db8:1111::2")
+            .to_string(),
+        peer_public_key: peer["public_key"]
+            .as_str()
+            .unwrap_or("bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=")
+            .to_string(),
+        endpoint: peer["endpoint"]["host"]
+            .as_str()
+            .unwrap_or("engage.cloudflareclient.com:2408")
+            .to_string(),
+        reserved: parse_client_id(&config_section["client_id"]),
+        device_id: device_id.clone(),
+        access_token,
+    };
+
+    let _ = fs::create_dir_all(path.parent().unwrap());
+    let data = serde_json::to_string_pretty(&warp_config).map_err(|e| format!("serialize: {e}"))?;
+    fs::write(path, &data).map_err(|e| format!("write: {e}"))?;
+
+    Ok(format!(
+        "Registered OK: endpoint={}, addr={}, id={}",
+        warp_config.endpoint, warp_config.address_v4, device_id
+    ))
 }
 
 fn warp_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, AppError> {
