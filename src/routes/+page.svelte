@@ -11,39 +11,12 @@
 	import ImportExportBar from '$lib/components/ImportExportBar.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import { isMobile, isDesktop } from '$lib/utils/platform';
-	import { detectVpnInterfaces, registerWarp, getWarpStatus } from '$lib/api/tauri';
+	import { detectVpnInterfaces } from '$lib/api/tauri';
 	import type { ServerConfig, DetectedVpn } from '$lib/types';
 
 	const store = connectionStore;
 	const servers = serversStore;
 	const appSettings = settingsStore;
-
-	// WARP state
-	let warpStatus = $state<'unknown' | 'registered' | 'not_registered' | 'registering' | 'error'>('unknown');
-	let warpError = $state<string | null>(null);
-
-	async function checkWarpStatus() {
-		try {
-			const status = await getWarpStatus();
-			warpStatus = status === 'registered' ? 'registered' : 'not_registered';
-		} catch {
-			warpStatus = 'unknown';
-		}
-	}
-
-	async function handleRegisterWarp() {
-		warpStatus = 'registering';
-		warpError = null;
-		try {
-			const result = await registerWarp();
-			warpStatus = 'registered';
-			showToast(result);
-		} catch (e) {
-			warpStatus = 'error';
-			warpError = String(e);
-			showToast(`WARP registration failed: ${e}`, 'error');
-		}
-	}
 
 	// Timer state
 	let elapsedSeconds = $state(0);
@@ -197,7 +170,6 @@
 		if (isDesktop()) {
 			refreshVpnDetection();
 		}
-		checkWarpStatus();
 	});
 
 	onDestroy(() => {
@@ -248,51 +220,15 @@
 			</svg>
 			Logs
 		</a>
-		<div class="flex items-center gap-3">
-			<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-				<input
-					type="checkbox"
-					checked={appSettings.settings.dpi_bypass?.enabled ?? false}
-					onchange={(e) => appSettings.setDpiBypass(e.currentTarget.checked)}
-					class="rounded border-border"
-				/>
-				DPI bypass
-			</label>
-			<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-				<input
-					type="checkbox"
-					checked={appSettings.settings.auto_connect}
-					onchange={(e) => appSettings.setAutoConnect(e.currentTarget.checked)}
-					class="rounded border-border"
-				/>
-				Auto-connect
-			</label>
-		</div>
-	</div>
-
-	<!-- WARP registration for mobile internet -->
-	<div class="flex items-center justify-between px-1">
-		<div class="flex items-center gap-2">
-			<span class="text-xs text-muted-foreground">WARP:</span>
-			{#if warpStatus === 'registered'}
-				<span class="text-xs text-green-500">Ready for mobile internet</span>
-			{:else if warpStatus === 'registering'}
-				<span class="text-xs text-yellow-500">Registering...</span>
-			{:else if warpStatus === 'error'}
-				<span class="text-xs text-red-500">Failed (try while VPN is connected)</span>
-			{:else}
-				<span class="text-xs text-muted-foreground/60">Not set up</span>
-			{/if}
-		</div>
-		{#if warpStatus !== 'registered'}
-			<button
-				class="text-xs px-2.5 py-1 rounded-md bg-muted hover:bg-muted/80 text-foreground transition-colors disabled:opacity-50"
-				onclick={handleRegisterWarp}
-				disabled={warpStatus === 'registering'}
-			>
-				{warpStatus === 'registering' ? 'Registering...' : 'Setup WARP'}
-			</button>
-		{/if}
+		<label class="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+			<input
+				type="checkbox"
+				checked={appSettings.settings.auto_connect}
+				onchange={(e) => appSettings.setAutoConnect(e.currentTarget.checked)}
+				class="rounded border-border"
+			/>
+			Auto-connect
+		</label>
 	</div>
 
 	<!-- Bypass domains (split tunneling) -->

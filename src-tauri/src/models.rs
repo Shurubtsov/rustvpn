@@ -149,32 +149,11 @@ pub struct DetectedVpn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DpiBypassSettings {
-    pub enabled: bool,
-    pub packets: String,
-    pub length: String,
-    pub interval: String,
-}
-
-impl Default for DpiBypassSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            packets: "tlshello".to_string(),
-            length: "1-3".to_string(),
-            interval: "1-3".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub auto_connect: bool,
     pub last_server_id: Option<String>,
     #[serde(default = "default_bypass_domains")]
     pub bypass_domains: Vec<String>,
-    #[serde(default)]
-    pub dpi_bypass: DpiBypassSettings,
 }
 
 fn default_bypass_domains() -> Vec<String> {
@@ -193,7 +172,6 @@ impl Default for AppSettings {
             auto_connect: false,
             last_server_id: None,
             bypass_domains: default_bypass_domains(),
-            dpi_bypass: DpiBypassSettings::default(),
         }
     }
 }

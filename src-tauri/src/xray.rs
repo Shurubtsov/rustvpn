@@ -13,8 +13,7 @@ use tauri_plugin_shell::ShellExt;
 use crate::config;
 use crate::config::generate_client_config;
 use crate::models::{
-    AppError, ConnectionInfo, ConnectionStatus, DetectedVpn, DpiBypassSettings, LogEntry,
-    ServerConfig, SpeedStats,
+    AppError, ConnectionInfo, ConnectionStatus, DetectedVpn, LogEntry, ServerConfig, SpeedStats,
 };
 #[cfg(desktop)]
 use crate::network;
@@ -91,7 +90,6 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
-        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         // Don't start if already running
         {
@@ -113,12 +111,12 @@ impl XrayManager {
 
         #[cfg(desktop)]
         {
-            self.start_desktop(app, server, bypass_domains, dpi_bypass)?;
+            self.start_desktop(app, server, bypass_domains)?;
         }
 
         #[cfg(mobile)]
         {
-            self.start_mobile(app, server, bypass_domains, dpi_bypass)?;
+            self.start_mobile(app, server, bypass_domains)?;
         }
 
         Ok(())
@@ -130,7 +128,6 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
-        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         // Kill any stale xray process from a previous run
         {
@@ -197,8 +194,6 @@ impl XrayManager {
             &bypass_subnet_list,
             send_through,
             &vpn_dns_servers,
-            dpi_bypass,
-            None,
         )?;
 
         // Write config to temp file
@@ -665,54 +660,12 @@ impl XrayManager {
         app: &AppHandle<R>,
         server: &ServerConfig,
         bypass_domains: &[String],
-        dpi_bypass: &DpiBypassSettings,
     ) -> Result<(), AppError> {
         use tauri_plugin_vpn::VpnPluginExt;
 
-        // WARP chain logic:
-        // - WiFi: register WARP in background (if not cached), connect directly
-        // - Cellular + warp.json exists: chain through WARP
-        // - Cellular + no warp.json: connect directly with warning
-        let cellular_check = app.vpn().is_cellular_network();
-        let is_cellular = cellular_check.as_ref().copied().unwrap_or(false);
-        push_log_entry(
-            &self.logs,
-            "info",
-            &format!("[warp] Network: is_cellular={:?}", cellular_check),
-        );
-        let warp = if is_cellular {
-            let cfg = crate::warp::load_warp_config(app);
-            if cfg.is_some() {
-                push_log_entry(&self.logs, "info", "[warp] Cellular: WARP chain enabled");
-            } else {
-                push_log_entry(
-                    &self.logs,
-                    "warning",
-                    "[warp] Cellular: no WARP credentials. Connect on WiFi first to register WARP for mobile internet bypass.",
-                );
-            }
-            cfg
-        } else {
-            crate::warp::register_in_background(app, &self.logs);
-            push_log_entry(
-                &self.logs,
-                "info",
-                "[warp] WiFi: connecting directly, WARP registering in background",
-            );
-            None
-        };
-
         // Generate xray config (no bypass subnets on mobile)
-        let mut config_json = generate_client_config(
-            server,
-            DEFAULT_SOCKS_PORT,
-            bypass_domains,
-            &[],
-            None,
-            &[],
-            dpi_bypass,
-            warp.as_ref(),
-        )?;
+        let mut config_json =
+            generate_client_config(server, DEFAULT_SOCKS_PORT, bypass_domains, &[], None, &[])?;
 
         // Apply Android-specific modifications
         config_json = config::modify_config_for_android(&config_json)?;

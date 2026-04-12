@@ -124,10 +124,10 @@ RustVPN/
 │   ├── src/
 │   │   ├── main.rs               # Binary entry point
 │   │   ├── lib.rs                # Tauri builder, plugin registration, command handler
-│   │   ├── models.rs             # ServerConfig, RealitySettings, ConnectionInfo, DpiBypassSettings, AppError
+│   │   ├── models.rs             # ServerConfig, RealitySettings, ConnectionInfo, AppError
 │   │   ├── commands.rs           # All #[tauri::command] handlers
 │   │   ├── xray.rs               # XrayManager: spawn/kill xray sidecar, state machine
-│   │   ├── config.rs             # generate_client_config(): builds xray JSON config (incl. DPI bypass fragment)
+│   │   ├── config.rs             # generate_client_config(): builds xray JSON config
 │   │   ├── storage.rs            # Load/save servers.json from OS config dir
 │   │   └── uri.rs                # VLESS URI parse and serialize
 │   ├── binaries/
@@ -148,8 +148,7 @@ RustVPN/
 │   │   │   └── index.ts          # TypeScript interfaces (mirrors Rust structs)
 │   │   ├── stores/
 │   │   │   ├── connection.svelte.ts  # Connection state store (polling, connect/disconnect)
-│   │   │   ├── servers.svelte.ts     # Server list store (CRUD, selection, import/export)
-│   │   │   └── settings.svelte.ts    # App settings store (auto-connect, DPI bypass)
+│   │   │   └── servers.svelte.ts     # Server list store (CRUD, selection, import/export)
 │   │   ├── components/
 │   │   │   ├── ConnectButton.svelte   # Round toggle button
 │   │   │   ├── StatusDisplay.svelte   # Status dot, timer, server info

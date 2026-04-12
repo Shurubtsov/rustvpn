@@ -1,5 +1,4 @@
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use tauri::{
     plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
@@ -59,28 +58,5 @@ impl<R: Runtime> VpnPlugin<R> {
         self.handle
             .run_mobile_plugin::<VpnStats>("queryStats", serde_json::json!({}))
             .map_err(|e| crate::Error::PluginInvoke(e.to_string()))
-    }
-
-    pub fn register_warp(&self, public_key: &str) -> Result<serde_json::Value, crate::Error> {
-        let result: serde_json::Value = self
-            .handle
-            .run_mobile_plugin(
-                "registerWarp",
-                serde_json::json!({ "publicKey": public_key }),
-            )
-            .map_err(|e| crate::Error::PluginInvoke(e.to_string()))?;
-        Ok(result)
-    }
-
-    pub fn is_cellular_network(&self) -> Result<bool, crate::Error> {
-        #[derive(Deserialize)]
-        struct CellularResult {
-            cellular: bool,
-        }
-        let result: CellularResult = self
-            .handle
-            .run_mobile_plugin("isCellularNetwork", serde_json::json!({}))
-            .map_err(|e| crate::Error::PluginInvoke(e.to_string()))?;
-        Ok(result.cellular)
     }
 }

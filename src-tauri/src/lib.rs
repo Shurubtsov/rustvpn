@@ -11,7 +11,6 @@ pub mod tray;
 #[cfg(target_os = "linux")]
 pub mod tun;
 pub mod uri;
-pub mod warp;
 pub mod xray;
 
 use tauri::Manager;
@@ -24,15 +23,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            // Init log plugin for ALL builds (not just debug) so Rust logs reach logcat
-            app.handle().plugin(
-                tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
-                    .build(),
-            )?;
-
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_shell::init())?;
+
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
 
             // Clean up stale TUN from previous crash (Linux only)
             #[cfg(target_os = "linux")]
@@ -72,12 +72,8 @@ pub fn run() {
                     if let Ok(servers) = storage::load_servers(&handle) {
                         if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
                             let manager = app.state::<XrayManager>();
-                            if let Err(e) = manager.start(
-                                &handle,
-                                server,
-                                &settings.bypass_domains,
-                                &settings.dpi_bypass,
-                            ) {
+                            if let Err(e) = manager.start(&handle, server, &settings.bypass_domains)
+                            {
                                 log::warn!("Auto-connect failed: {e}");
                             }
                         }
@@ -109,9 +105,6 @@ pub fn run() {
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
             commands::detect_vpn_interfaces,
-            commands::register_warp,
-            commands::get_warp_status,
-            commands::get_warp_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

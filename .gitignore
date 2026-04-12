@@ -40,3 +40,6 @@ release-assets/
 
 # Logs
 *.log
+
+# Personal mobile bypass research notes (not committed)
+VPN.md

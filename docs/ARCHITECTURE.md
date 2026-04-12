@@ -84,7 +84,7 @@ User Apps
 | `tauri-plugin-vpn/android/.../HevTunnel.kt` | Kotlin JNI wrapper — loads libhev.so via dlopen, runs tunnel in pthread |
 | `tauri-plugin-vpn/android/.../cpp/hev_jni.c` | C JNI library — dlopen/dlsym wrapper for hev-socks5-tunnel shared library |
 | `tauri-plugin-vpn/src/mobile.rs` | Rust plugin interface for Android (calls Kotlin via Tauri mobile plugin API) |
-| `src-tauri/src/config.rs` | `modify_config_for_android()` — merges `sockopt.mark` (preserving existing fragment settings), removes HTTP inbound |
+| `src-tauri/src/config.rs` | `modify_config_for_android()` — adds `sockopt.mark`, removes HTTP inbound |
 
 ### Why JNI dlopen (not fork/exec)?
 
@@ -112,10 +112,10 @@ Binaries are placed in `tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/` (x
 |------|---------------|
 | `main.rs` | Entry point; calls `rustvpn_lib::run()` |
 | `lib.rs` | Tauri builder setup: registers plugins, manages `XrayManager` state, registers all IPC commands |
-| `models.rs` | Core data types: `ServerConfig`, `RealitySettings`, `ConnectionInfo`, `ConnectionStatus`, `DpiBypassSettings`, `AppSettings`, `AppError` |
+| `models.rs` | Core data types: `ServerConfig`, `RealitySettings`, `ConnectionInfo`, `ConnectionStatus`, `AppError` |
 | `commands.rs` | All `#[tauri::command]` handlers for connection and server CRUD |
 | `xray.rs` | `XrayManager` struct — spawns/kills xray sidecar, monitors output, tracks connection state |
-| `config.rs` | `generate_client_config()` — builds the xray JSON config from a `ServerConfig`; injects `sockopt.fragment` for DPI bypass when enabled |
+| `config.rs` | `generate_client_config()` — builds the xray JSON config from a `ServerConfig` |
 | `network.rs` | `detect_vpn_routes()` — detects corporate VPN interfaces and subnets via `ip -j route show`; `collect_bypass_subnets()` flattens results for proxy/config consumption |
 | `storage.rs` | Reads/writes `servers.json` in the OS app config directory |
 | `uri.rs` | `parse_vless_uri()` and `to_vless_uri()` — VLESS URI serialization; also exposes `parse_vless_uri_cmd` and `export_vless_uri` as Tauri commands |
@@ -131,7 +131,6 @@ Binaries are placed in `tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a/` (x
 | `src/lib/types/index.ts` | TypeScript interfaces mirroring Rust structs |
 | `src/lib/stores/connection.svelte.ts` | Svelte 5 rune-based store for connection state and actions |
 | `src/lib/stores/servers.svelte.ts` | Svelte 5 rune-based store for server list and selection |
-| `src/lib/stores/settings.svelte.ts` | Svelte 5 rune-based store for app settings (auto-connect, DPI bypass) |
 | `src/lib/components/ConnectButton.svelte` | Circular toggle button; reflects connection status via color |
 | `src/lib/components/StatusDisplay.svelte` | Status indicator dot, connection timer, server info panel |
 | `src/lib/components/ServerList.svelte` | Scrollable list of servers with selection, edit, delete |
@@ -158,11 +157,10 @@ sequenceDiagram
     CS->>API: connect(serverConfig)
     API->>Rust: invoke("connect", {serverConfig})
     Rust->>Rust: serverConfig.validate()
-    Rust->>Rust: load settings (bypass_domains, dpi_bypass)
-    Rust->>XM: manager.start(app, server, bypass_domains, dpi_bypass)
+    Rust->>XM: manager.start(app, server)
     XM->>XM: check not already connected
     XM->>XM: status = Connecting
-    XM->>CFG: generate_client_config(server, 10808, ..., dpi_bypass)
+    XM->>CFG: generate_client_config(server, 10808)
     CFG-->>XM: xray JSON config string
     XM->>XM: write xray_config.json to app_data_dir
     XM->>XRAY: spawn sidecar("xray", ["run", "-c", config_file])
@@ -283,12 +281,3 @@ Methods: `connectVpn(config)`, `disconnectVpn()`, `refresh()`, `startPolling()`,
 | `selectedIndex` | `number` (derived) | Index of selected server |
 
 Methods: `load()`, `addServer()`, `updateServer()`, `deleteServer()`, `selectServer(id)`, `selectServerByIndex(index)`, `importFromJson(json)`, `importFromUri(uri)`, `exportToJson()`, `exportToUri(server)`.
-
-### Svelte: `settingsStore` (`src/lib/stores/settings.svelte.ts`)
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `settings` | `AppSettings` | Current app settings (auto-connect, bypass domains, DPI bypass) |
-| `loaded` | `boolean` | Whether settings have been loaded from backend |
-
-Methods: `load()`, `setAutoConnect(value)`, `setBypassDomains(domains)`, `setDpiBypass(enabled)`.
