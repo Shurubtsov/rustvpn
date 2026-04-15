@@ -16,6 +16,7 @@
 		if (isLoading || isTransitioning) {
 			return status === 'disconnecting' ? 'Disconnecting...' : 'Connecting...';
 		}
+		if (status === 'error') return 'Retry';
 		return isConnected ? 'Disconnect' : 'Connect';
 	});
 

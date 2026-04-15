@@ -31,9 +31,15 @@
 	let vpnDetecting = $state(false);
 
 	async function refreshVpnDetection() {
+		if (vpnDetecting) return;
 		vpnDetecting = true;
+		// Cap the detection call so a hung backend can't leave the button
+		// stuck on "Detecting…" forever.
+		const timeout = new Promise<never>((_, reject) =>
+			setTimeout(() => reject(new Error('Timed out after 10s')), 10000)
+		);
 		try {
-			detectedVpns = await detectVpnInterfaces();
+			detectedVpns = await Promise.race([detectVpnInterfaces(), timeout]);
 		} catch (e) {
 			showToast(`VPN detection failed: ${e}`, 'error');
 		} finally {
@@ -86,10 +92,20 @@
 		if (store.isLoading || store.isTransitioning) return;
 		if (store.isConnected) {
 			await store.disconnectVpn();
-		} else {
-			const selected = servers.selectedServer;
-			if (selected) await store.connectVpn(selected);
+			return;
 		}
+		const selected = servers.selectedServer;
+		if (!selected) {
+			showToast('No server selected', 'error');
+			return;
+		}
+		// Cheap frontend sanity check — catches corrupted imports before
+		// they become cryptic backend errors.
+		if (!selected.address?.trim() || !selected.uuid?.trim() || !selected.port) {
+			showToast('Selected server config is incomplete', 'error');
+			return;
+		}
+		await store.connectVpn(selected);
 	}
 
 	function openAdd() {
@@ -163,8 +179,18 @@
 	}
 
 	onMount(async () => {
-		await servers.load();
+		try {
+			await servers.load();
+		} catch (e) {
+			showToast(`Failed to load servers: ${e}`, 'error');
+		}
 		await appSettings.load();
+		if (appSettings.loadError) {
+			showToast(
+				`Failed to load settings — using defaults (${appSettings.loadError})`,
+				'error'
+			);
+		}
 		store.refresh();
 		store.startPolling();
 		if (isDesktop()) {
@@ -224,7 +250,13 @@
 			<input
 				type="checkbox"
 				checked={appSettings.settings.auto_connect}
-				onchange={(e) => appSettings.setAutoConnect(e.currentTarget.checked)}
+				onchange={async (e) => {
+					try {
+						await appSettings.setAutoConnect(e.currentTarget.checked);
+					} catch (err) {
+						showToast(`Failed to save settings: ${err}`, 'error');
+					}
+				}}
 				class="rounded border-border"
 			/>
 			Auto-connect
@@ -245,12 +277,26 @@
 				rows="3"
 				placeholder="One domain per line, e.g.&#10;claude.ai&#10;anthropic.com"
 				value={appSettings.settings.bypass_domains?.join('\n') ?? ''}
-				onchange={(e) => {
-					const domains = e.currentTarget.value
+				onchange={async (e) => {
+					// Accept only syntactically plausible hostnames: letters, digits,
+					// dots, hyphens. Strip anything that looks like junk rather than
+					// forwarding it to the backend, where it would silently break the
+					// xray routing rules or gsettings bypass list.
+					const domainRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+					const raw = e.currentTarget.value
 						.split('\n')
-						.map((d) => d.trim())
+						.map((d) => d.trim().toLowerCase())
 						.filter((d) => d.length > 0);
-					appSettings.setBypassDomains(domains);
+					const valid = raw.filter((d) => domainRegex.test(d));
+					const invalid = raw.filter((d) => !domainRegex.test(d));
+					if (invalid.length > 0) {
+						showToast(`Ignored ${invalid.length} invalid domain(s)`, 'error');
+					}
+					try {
+						await appSettings.setBypassDomains(valid);
+					} catch (err) {
+						showToast(`Failed to save settings: ${err}`, 'error');
+					}
 				}}
 			></textarea>
 			<p class="text-[10px] text-muted-foreground/60 mt-0.5">These domains bypass the VPN tunnel (one per line). Reconnect to apply.</p>

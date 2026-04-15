@@ -38,12 +38,25 @@ pub fn disconnect<R: Runtime>(
     _app: AppHandle<R>,
     manager: State<'_, XrayManager>,
 ) -> Result<(), String> {
+    // On mobile, tear down the native VPN service. On desktop this is a no-op.
+    // Always run `manager.stop()` afterwards so the in-process state is cleaned
+    // up even if the plugin call fails — otherwise the UI thinks it's
+    // disconnected while the backend still believes a session is active.
     #[cfg(mobile)]
-    {
+    let plugin_err: Option<String> = {
         use tauri_plugin_vpn::VpnPluginExt;
-        _app.vpn().stop_vpn().map_err(|e| e.to_string())?;
+        _app.vpn().stop_vpn().err().map(|e| e.to_string())
+    };
+    #[cfg(desktop)]
+    let plugin_err: Option<String> = None;
+
+    let manager_err = manager.stop().err().map(|e| e.to_string());
+
+    match (plugin_err, manager_err) {
+        (None, None) => Ok(()),
+        (Some(a), Some(b)) => Err(format!("VPN plugin: {a}; manager: {b}")),
+        (Some(e), None) | (None, Some(e)) => Err(e),
     }
-    manager.stop().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

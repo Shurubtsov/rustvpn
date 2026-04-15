@@ -150,10 +150,9 @@ pub fn generate_client_config(
             for outbound in outbounds.iter_mut() {
                 let tag = outbound.get("tag").and_then(|t| t.as_str()).unwrap_or("");
                 if tag == "proxy" || tag == "direct" {
-                    outbound
-                        .as_object_mut()
-                        .unwrap()
-                        .insert("sendThrough".to_string(), json!(local_ip));
+                    if let Some(obj) = outbound.as_object_mut() {
+                        obj.insert("sendThrough".to_string(), json!(local_ip));
+                    }
                 }
             }
 
@@ -173,7 +172,13 @@ pub fn generate_client_config(
     }
 
     // Build routing rules dynamically
-    let rules = config["routing"]["rules"].as_array_mut().unwrap();
+    let rules = config
+        .get_mut("routing")
+        .and_then(|r| r.get_mut("rules"))
+        .and_then(|r| r.as_array_mut())
+        .ok_or_else(|| {
+            AppError::Config("Base config missing routing.rules array".to_string())
+        })?;
 
     // Bypass domains → direct (skip VPN tunnel)
     if !bypass_domains.is_empty() {

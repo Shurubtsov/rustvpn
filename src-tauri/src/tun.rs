@@ -242,25 +242,24 @@ pub fn stop_tun(config_dir: &Path) -> Result<(), AppError> {
         TUN_GW.to_string(),
     ];
 
-    // Read saved gateway info for bypass route and ip rule cleanup
-    if gw_file.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&gw_file) {
-            let lines: Vec<&str> = contents.lines().collect();
-            if lines.len() >= 3 {
-                let server_ip = lines[0];
-                let gateway = lines[1];
-                let dev = lines[2];
-                // Validate all values before passing to privileged helper
-                if is_valid_ip(server_ip) && is_valid_ip(gateway) && is_valid_iface(dev) {
-                    args.push(server_ip.to_string());
-                    args.push(gateway.to_string());
-                    args.push(dev.to_string());
-                    if lines.len() >= 4 && is_valid_ip(lines[3]) {
-                        args.push(lines[3].to_string()); // local_ip
-                    }
-                } else {
-                    warn!("Gateway file contains invalid data, skipping route cleanup");
+    // Read saved gateway info for bypass route and ip rule cleanup. Single
+    // open-and-read avoids a TOCTOU race with concurrent cleanup, and a
+    // missing file is silently treated as "nothing to clean up".
+    if let Ok(contents) = std::fs::read_to_string(&gw_file) {
+        let lines: Vec<&str> = contents.lines().collect();
+        if lines.len() >= 3 {
+            let server_ip = lines[0];
+            let gateway = lines[1];
+            let dev = lines[2];
+            if is_valid_ip(server_ip) && is_valid_ip(gateway) && is_valid_iface(dev) {
+                args.push(server_ip.to_string());
+                args.push(gateway.to_string());
+                args.push(dev.to_string());
+                if lines.len() >= 4 && is_valid_ip(lines[3]) {
+                    args.push(lines[3].to_string()); // local_ip
                 }
+            } else {
+                warn!("Gateway file contains invalid data, skipping route cleanup");
             }
         }
         let _ = std::fs::remove_file(&gw_file);

@@ -290,11 +290,9 @@ mod tests {
     fn parse_uri_empty_uuid() {
         // Empty UUID before @ sign
         let result = parse_vless_uri("vless://@1.2.3.4:443?flow=xtls-rprx-vision");
-        // Should parse (empty uuid is accepted by parser), but the uuid field will be empty
-        // This tests that the parser handles it gracefully without panicking
-        match result {
-            Ok(config) => assert_eq!(config.uuid, ""),
-            Err(_) => {} // also acceptable
+        // Err is also acceptable — the test only asserts we don't panic.
+        if let Ok(config) = result {
+            assert_eq!(config.uuid, "");
         }
     }
 

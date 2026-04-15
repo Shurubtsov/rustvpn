@@ -8,6 +8,7 @@
 	let autoScroll = $state(true);
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 	let scrollContainer: HTMLDivElement;
+	let fetchError = $state<string | null>(null);
 
 	const filteredLogs = $derived(
 		search.trim()
@@ -18,13 +19,14 @@
 	async function fetchLogs() {
 		try {
 			logs = await getLogs();
+			fetchError = null;
 			if (autoScroll && scrollContainer) {
 				requestAnimationFrame(() => {
 					scrollContainer.scrollTop = scrollContainer.scrollHeight;
 				});
 			}
-		} catch {
-			// Ignore
+		} catch (err) {
+			fetchError = err instanceof Error ? err.message : String(err);
 		}
 	}
 
@@ -32,8 +34,9 @@
 		try {
 			await clearLogs();
 			logs = [];
-		} catch {
-			// Ignore
+			fetchError = null;
+		} catch (err) {
+			fetchError = err instanceof Error ? err.message : String(err);
 		}
 	}
 
@@ -104,6 +107,12 @@
 			Clear
 		</button>
 	</div>
+
+	{#if fetchError}
+		<div class="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-1.5">
+			Log fetch failed: {fetchError}
+		</div>
+	{/if}
 
 	<!-- Log entries -->
 	<div

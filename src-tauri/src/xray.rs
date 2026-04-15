@@ -224,7 +224,14 @@ impl XrayManager {
             .map_err(|e| AppError::Config(format!("Failed to get app data dir: {e}")))?;
         std::fs::create_dir_all(&config_dir)?;
         let config_file = config_dir.join("xray_config.json");
-        std::fs::write(&config_file, &config_json)?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&config_file)?;
+            f.write_all(config_json.as_bytes())?;
+            // Fsync so a crash between write and spawn can't leave xray reading
+            // a truncated/empty file on the next run.
+            f.sync_all()?;
+        }
 
         info!("Wrote xray config to {}", config_file.display());
 
@@ -351,28 +358,17 @@ impl XrayManager {
 
                         if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
+                            && mark_connected(
+                                &started_flag,
+                                &state,
+                                &server_name,
+                                &server_address,
+                            )
                         {
-                            started_flag.store(true, std::sync::atomic::Ordering::Release);
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs();
-
-                            let mut s = state.lock().unwrap();
-                            if s.status == ConnectionStatus::Connecting {
-                                s.status = ConnectionStatus::Connected;
-                                s.connected_since = Some(now);
-                                s.server_name = Some(server_name.clone());
-                                s.server_address = Some(server_address.clone());
-                                s.error_message = None;
-                                info!("xray connected successfully (detected from stdout)");
-                                proxy::enable_system_proxy(
-                                    DEFAULT_SOCKS_PORT,
-                                    &bypass_ref.lock().unwrap(),
-                                    &bypass_subnets_ref.lock().unwrap(),
-                                );
-                            }
-                            drop(s);
+                            info!("xray connected successfully (detected from stdout)");
+                            let domains = bypass_ref.lock().unwrap().clone();
+                            let subnets = bypass_subnets_ref.lock().unwrap().clone();
+                            proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &domains, &subnets);
                             let _ = app_handle.emit("connection-status-changed", "connected");
                         }
                     }
@@ -392,28 +388,17 @@ impl XrayManager {
 
                         if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
+                            && mark_connected(
+                                &started_flag,
+                                &state,
+                                &server_name,
+                                &server_address,
+                            )
                         {
-                            started_flag.store(true, std::sync::atomic::Ordering::Release);
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs();
-
-                            let mut s = state.lock().unwrap();
-                            if s.status == ConnectionStatus::Connecting {
-                                s.status = ConnectionStatus::Connected;
-                                s.connected_since = Some(now);
-                                s.server_name = Some(server_name.clone());
-                                s.server_address = Some(server_address.clone());
-                                s.error_message = None;
-                                info!("xray connected successfully");
-                                proxy::enable_system_proxy(
-                                    DEFAULT_SOCKS_PORT,
-                                    &bypass_ref.lock().unwrap(),
-                                    &bypass_subnets_ref.lock().unwrap(),
-                                );
-                            }
-                            drop(s);
+                            info!("xray connected successfully");
+                            let domains = bypass_ref.lock().unwrap().clone();
+                            let subnets = bypass_subnets_ref.lock().unwrap().clone();
+                            proxy::enable_system_proxy(DEFAULT_SOCKS_PORT, &domains, &subnets);
                             let _ = app_handle.emit("connection-status-changed", "connected");
                         }
                     }
@@ -940,6 +925,11 @@ impl XrayManager {
             if let Some(ref dir) = config_dir {
                 if let Err(e) = tun::stop_tun(dir) {
                     warn!("TUN cleanup error: {e}");
+                    push_log_entry(
+                        &self.logs,
+                        "error",
+                        &format!("TUN cleanup failed: {e} — routes may be stale"),
+                    );
                 }
             }
         }
@@ -984,9 +974,20 @@ impl XrayManager {
     }
 
     pub fn test_connection(&self) -> Result<bool, AppError> {
-        // Try to connect through the SOCKS5 proxy to verify it's working
+        // Only report success if we actually believe we're connected — otherwise
+        // a probe against the SOCKS port can succeed against a stale/reused
+        // socket from a previous session and lie to the UI.
+        {
+            let state = self.state.lock().unwrap();
+            if state.status != ConnectionStatus::Connected {
+                return Ok(false);
+            }
+        }
         let addr = format!("127.0.0.1:{DEFAULT_SOCKS_PORT}");
-        match std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(3)) {
+        let socket_addr = addr
+            .parse()
+            .map_err(|e| AppError::XrayProcess(format!("Invalid SOCKS address: {e}")))?;
+        match std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)) {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
@@ -1139,6 +1140,38 @@ impl XrayManager {
             state.error_message = Some(err);
         }
     }
+}
+
+/// Transition state Connecting → Connected atomically under the state lock.
+///
+/// Returns true if this call was the one that performed the transition
+/// (i.e. the caller "won" the race and should enable the system proxy and
+/// emit the `connected` event). Returns false if the connection already
+/// timed out, was cancelled, or another thread already marked it Connected.
+fn mark_connected(
+    started_flag: &std::sync::atomic::AtomicBool,
+    state: &Arc<Mutex<ConnectionInfo>>,
+    server_name: &str,
+    server_address: &str,
+) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut s = state.lock().unwrap();
+    if s.status != ConnectionStatus::Connecting {
+        return false;
+    }
+    if started_flag.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return false;
+    }
+    s.status = ConnectionStatus::Connected;
+    s.connected_since = Some(now);
+    s.server_name = Some(server_name.to_string());
+    s.server_address = Some(server_address.to_string());
+    s.error_message = None;
+    true
 }
 
 fn push_log_entry(logs: &Arc<Mutex<VecDeque<LogEntry>>>, level: &str, message: &str) {

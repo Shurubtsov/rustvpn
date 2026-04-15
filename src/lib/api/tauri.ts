@@ -9,10 +9,6 @@ export async function disconnect(): Promise<void> {
 	await invoke<void>('disconnect');
 }
 
-export async function getStatus(): Promise<string> {
-	return await invoke<string>('get_status');
-}
-
 export async function getConnectionInfo(): Promise<ConnectionInfo> {
 	return await invoke<ConnectionInfo>('get_connection_info');
 }

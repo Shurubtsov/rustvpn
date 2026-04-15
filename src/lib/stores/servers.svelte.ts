@@ -4,6 +4,7 @@ import * as api from '$lib/api/tauri';
 function createServersStore() {
 	let servers = $state<ServerConfig[]>([]);
 	let selectedId = $state<string | null>(null);
+	let loadError = $state<string | null>(null);
 
 	const selectedServer = $derived(
 		selectedId !== null ? (servers.find((s) => s.id === selectedId) ?? null) : null
@@ -14,11 +15,17 @@ function createServersStore() {
 	);
 
 	async function load() {
-		const loaded = await api.getServers();
-		servers = loaded;
-		// Select first server if current selection is gone
-		if (selectedId === null || !loaded.some((s) => s.id === selectedId)) {
-			selectedId = loaded.length > 0 ? loaded[0].id : null;
+		try {
+			const loaded = await api.getServers();
+			servers = loaded;
+			// Select first server if current selection is gone
+			if (selectedId === null || !loaded.some((s) => s.id === selectedId)) {
+				selectedId = loaded.length > 0 ? loaded[0].id : null;
+			}
+			loadError = null;
+		} catch (err) {
+			loadError = err instanceof Error ? err.message : String(err);
+			throw err;
 		}
 	}
 
@@ -89,6 +96,9 @@ function createServersStore() {
 		},
 		get selectedServer() {
 			return selectedServer;
+		},
+		get loadError() {
+			return loadError;
 		},
 		load,
 		addServer,

@@ -38,8 +38,13 @@
 	}
 
 	async function handleUriImport(uri: string) {
-		showUriModal = false;
-		await onImportUri(uri);
+		// Keep the modal open until the import finishes, so a slow parse/save
+		// doesn't mislead the user into thinking it succeeded before it has.
+		try {
+			await onImportUri(uri);
+		} finally {
+			showUriModal = false;
+		}
 	}
 
 	async function exportToFile() {

@@ -68,6 +68,10 @@ function createConnectionStore() {
 	}
 
 	async function connectVpn(config: ServerConfig) {
+		// Guard against double-click: refuse to start a second connect/disconnect
+		// while one is already in flight. Without this, two racing promises both
+		// mutate `info` and the UI ends up out of sync with the backend.
+		if (isLoading) return;
 		isLoading = true;
 		info = { ...info, status: 'connecting', error_message: null };
 		try {
@@ -86,22 +90,28 @@ function createConnectionStore() {
 	}
 
 	async function disconnectVpn() {
+		if (isLoading) return;
 		isLoading = true;
 		info = { ...info, status: 'disconnecting' };
 		try {
 			await disconnect();
 			await refresh();
+			// Only stop polling and clear stats if disconnect actually succeeded.
+			// If it failed, the backend may still be connected and we need to
+			// keep polling so the UI reflects reality.
+			stopPolling();
+			stats = { ...DEFAULT_STATS };
+			speedHistory = { upload: [], download: [] };
 		} catch (err) {
 			info = {
 				...info,
 				status: 'error',
 				error_message: err instanceof Error ? err.message : String(err)
 			};
+			// Keep polling active — backend may still be connected.
+			await refresh();
 		} finally {
 			isLoading = false;
-			stopPolling();
-			stats = { ...DEFAULT_STATS };
-			speedHistory = { upload: [], download: [] };
 		}
 	}
 
