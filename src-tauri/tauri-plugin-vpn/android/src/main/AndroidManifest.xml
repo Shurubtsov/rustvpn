@@ -15,7 +15,11 @@
             android:name=".RustVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="VPN tunnel must remain active while the device is on to keep the user's traffic routed through RustVPN." />
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>

@@ -5,7 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import go.Seq
@@ -59,12 +61,39 @@ class RustVpnService : VpnService() {
                 // Must start foreground immediately on the main thread (Android requires this
                 // within 5 seconds of startForegroundService), then do heavy work in background.
                 createNotificationChannel()
-                startForeground(NOTIFICATION_ID, buildNotification())
+                startInForeground()
                 Thread { startVpn() }.start()
             }
             ACTION_STOP -> stopVpn()
         }
         return START_STICKY
+    }
+
+    private fun startInForeground() {
+        val notification = buildNotification()
+        // FOREGROUND_SERVICE_TYPE_SPECIAL_USE is only defined from API 34
+        // (UPSIDE_DOWN_CAKE). On API 34+ targeting apps, the type must match
+        // the manifest declaration or Android throws a SecurityException.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // User swiped the app from recents. Do NOT stop the VPN — re-assert foreground
+        // state so aggressive OEM killers (Xiaomi/Huawei/Samsung) are less likely to
+        // reap the process, and the VPN keeps routing traffic in the background.
+        Log.i(TAG, "onTaskRemoved: keeping VPN alive in background")
+        if (isRunning) {
+            startInForeground()
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startVpn() {

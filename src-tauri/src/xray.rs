@@ -77,6 +77,27 @@ impl XrayManager {
         self.state.lock().unwrap().clone()
     }
 
+    /// Adopt an already-running VPN session's state without re-launching anything.
+    ///
+    /// On Android, the native VpnService can survive the Tauri activity being
+    /// destroyed (swipe from recents). When the activity is re-created, this
+    /// method is called so the UI reflects the still-active session instead of
+    /// showing Disconnected. `connected_since` is set to now — the original
+    /// start time isn't recoverable without extra persistence.
+    #[cfg(mobile)]
+    pub fn adopt_running_state(&self, server: &ServerConfig) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let mut state = self.state.lock().unwrap();
+        state.status = ConnectionStatus::Connected;
+        state.server_name = Some(server.name.clone());
+        state.server_address = Some(server.address.clone());
+        state.connected_since = Some(now);
+        state.error_message = None;
+    }
+
     pub fn get_logs(&self) -> Vec<LogEntry> {
         self.logs.lock().unwrap().iter().cloned().collect()
     }

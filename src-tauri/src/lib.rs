@@ -65,9 +65,40 @@ pub fn run() {
                 });
             }
 
-            // Auto-connect on startup
             let settings = storage::load_settings(&handle).unwrap_or_default();
-            if settings.auto_connect {
+
+            // On Android, the VPN foreground service can outlive the activity
+            // (swipe from recents). If it's still running when we start up,
+            // adopt its state so the UI shows Connected instead of Disconnected,
+            // and skip the auto-connect path.
+            #[cfg(mobile)]
+            let vpn_already_running = {
+                use tauri_plugin_vpn::VpnPluginExt;
+                match handle.vpn().get_status() {
+                    Ok(status) if status.is_running => {
+                        if let Some(ref server_id) = settings.last_server_id {
+                            if let Ok(servers) = storage::load_servers(&handle) {
+                                if let Some(server) =
+                                    servers.iter().find(|s| s.id == *server_id)
+                                {
+                                    app.state::<XrayManager>().adopt_running_state(server);
+                                    log::info!(
+                                        "Adopted running VPN session for server {}",
+                                        server.name
+                                    );
+                                }
+                            }
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            #[cfg(desktop)]
+            let vpn_already_running = false;
+
+            // Auto-connect on startup
+            if !vpn_already_running && settings.auto_connect {
                 if let Some(ref server_id) = settings.last_server_id {
                     if let Ok(servers) = storage::load_servers(&handle) {
                         if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
