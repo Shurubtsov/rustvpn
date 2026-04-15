@@ -199,8 +199,17 @@ fn disable_windows() {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_command(program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(target_os = "windows")]
 fn reg_set(key: &str, name: &str, value: &str) {
-    let result = Command::new("reg")
+    let result = windows_command("reg")
         .args(["add", key, "/v", name, "/t", "REG_DWORD", "/d", value, "/f"])
         .output();
     if let Err(e) = result {
@@ -210,7 +219,7 @@ fn reg_set(key: &str, name: &str, value: &str) {
 
 #[cfg(target_os = "windows")]
 fn reg_set_str(key: &str, name: &str, value: &str) {
-    let result = Command::new("reg")
+    let result = windows_command("reg")
         .args(["add", key, "/v", name, "/t", "REG_SZ", "/d", value, "/f"])
         .output();
     if let Err(e) = result {
@@ -221,7 +230,7 @@ fn reg_set_str(key: &str, name: &str, value: &str) {
 #[cfg(target_os = "windows")]
 fn reg_delete(key: &str, name: &str) {
     // Ignore errors — value might not exist
-    let _ = Command::new("reg")
+    let _ = windows_command("reg")
         .args(["delete", key, "/v", name, "/f"])
         .output();
 }
@@ -249,7 +258,7 @@ public class WinINet {
 [WinINet]::Refresh()
 "#;
 
-    let result = Command::new("powershell")
+    let result = windows_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
         .output();
 
