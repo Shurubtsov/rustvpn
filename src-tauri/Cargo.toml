@@ -1,6 +1,6 @@
 [package]
 name = "rustvpn"
-version = "0.9.0"
+version = "0.9.1"
 description = "VPN client using VLESS+REALITY protocol"
 authors = ["danila"]
 license = "MIT"
