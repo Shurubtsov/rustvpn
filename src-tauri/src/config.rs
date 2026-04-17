@@ -176,9 +176,7 @@ pub fn generate_client_config(
         .get_mut("routing")
         .and_then(|r| r.get_mut("rules"))
         .and_then(|r| r.as_array_mut())
-        .ok_or_else(|| {
-            AppError::Config("Base config missing routing.rules array".to_string())
-        })?;
+        .ok_or_else(|| AppError::Config("Base config missing routing.rules array".to_string()))?;
 
     // Bypass domains → direct (skip VPN tunnel)
     if !bypass_domains.is_empty() {

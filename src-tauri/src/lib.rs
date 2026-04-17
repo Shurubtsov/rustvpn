@@ -45,6 +45,13 @@ pub fn run() {
                 tun::cleanup_stale_tun(&config_dir);
             }
 
+            // Reset system proxy if it's still pointing at our ports from a prior
+            // session that didn't shut down cleanly. Must happen BEFORE auto-connect
+            // (which would set it again) — otherwise apps would try to reach a dead
+            // SOCKS proxy during the window between app start and VPN connect.
+            #[cfg(desktop)]
+            proxy::reset_stale_system_proxy();
+
             app.manage(XrayManager::new());
 
             let handle = app.handle().clone();
@@ -78,9 +85,7 @@ pub fn run() {
                     Ok(status) if status.is_running => {
                         if let Some(ref server_id) = settings.last_server_id {
                             if let Ok(servers) = storage::load_servers(&handle) {
-                                if let Some(server) =
-                                    servers.iter().find(|s| s.id == *server_id)
-                                {
+                                if let Some(server) = servers.iter().find(|s| s.id == *server_id) {
                                     app.state::<XrayManager>().adopt_running_state(server);
                                     log::info!(
                                         "Adopted running VPN session for server {}",
@@ -133,6 +138,7 @@ pub fn run() {
             commands::clear_logs,
             commands::get_settings,
             commands::update_settings,
+            commands::apply_bypass_domains,
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
             commands::detect_vpn_interfaces,

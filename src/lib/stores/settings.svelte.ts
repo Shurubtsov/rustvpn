@@ -1,4 +1,4 @@
-import { getSettings, updateSettings } from '$lib/api/tauri';
+import { applyBypassDomains, getSettings, updateSettings } from '$lib/api/tauri';
 import type { AppSettings } from '$lib/types';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -46,8 +46,30 @@ function createSettingsStore() {
 		await save({ ...settings, auto_connect: value });
 	}
 
-	async function setBypassDomains(domains: string[]): Promise<void> {
-		await save({ ...settings, bypass_domains: domains });
+	async function setBypassDomains(domains: string[]): Promise<boolean> {
+		// No-op guard: the textarea's `onchange` can fire on blur even when the
+		// user didn't edit anything, and without this check we'd tear down a live
+		// VPN session (stop → start) on every focus/blur cycle.
+		const current = settings.bypass_domains ?? [];
+		const unchanged =
+			current.length === domains.length && current.every((d, i) => d === domains[i]);
+		if (unchanged) {
+			return false;
+		}
+		// Route through the backend command that also reloads the running xray/TUN
+		// stack if a session is active — otherwise edits would silently do nothing
+		// until the user reconnected manually.
+		const prev = settings;
+		settings = { ...settings, bypass_domains: domains };
+		try {
+			const reloaded = await applyBypassDomains(domains);
+			saveError = null;
+			return reloaded;
+		} catch (err) {
+			settings = prev;
+			saveError = err instanceof Error ? err.message : String(err);
+			throw err;
+		}
 	}
 
 	return {

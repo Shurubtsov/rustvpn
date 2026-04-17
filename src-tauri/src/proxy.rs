@@ -37,6 +37,20 @@ pub fn disable_system_proxy() {
     disable_macos();
 }
 
+/// Reset any system proxy state left behind by a previous session that pointed
+/// to our local ports. Called at app startup before auto-connect; no-op if the
+/// user has their own proxy configured.
+pub fn reset_stale_system_proxy() {
+    #[cfg(target_os = "linux")]
+    reset_stale_linux();
+
+    #[cfg(target_os = "windows")]
+    reset_stale_windows();
+
+    #[cfg(target_os = "macos")]
+    reset_stale_macos();
+}
+
 // ---------------------------------------------------------------------------
 // Linux (GNOME / gsettings)
 // ---------------------------------------------------------------------------
@@ -108,6 +122,42 @@ fn disable_linux() {
         gsettings_set("org.gnome.system.proxy", "mode", "none");
         info!("System proxy disabled via gsettings");
     }
+}
+
+/// Reset system proxy at app startup if it's pointing at our local ports but we
+/// aren't the ones serving them — otherwise a crash that skipped `disable_linux`
+/// leaves every app trying to reach a dead 127.0.0.1:10808.
+#[cfg(target_os = "linux")]
+pub fn reset_stale_linux() {
+    if !has_gsettings() {
+        return;
+    }
+    let mode = gsettings_get("org.gnome.system.proxy", "mode");
+    if mode != "manual" {
+        return;
+    }
+    let socks_host = gsettings_get("org.gnome.system.proxy.socks", "host");
+    if socks_host == SOCKS_HOST || socks_host == "localhost" {
+        gsettings_set("org.gnome.system.proxy", "mode", "none");
+        info!("Reset stale system proxy (was manual → 127.0.0.1) left over from prior session");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gsettings_get(schema: &str, key: &str) -> String {
+    let Ok(output) = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+    else {
+        return String::new();
+    };
+    if !output.status.success() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_matches('\'')
+        .to_string()
 }
 
 #[cfg(target_os = "linux")]
@@ -196,6 +246,46 @@ fn disable_windows() {
     refresh_windows_proxy();
 
     info!("System proxy disabled via Windows registry");
+}
+
+#[cfg(target_os = "windows")]
+pub fn reset_stale_windows() {
+    let base = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    let Some(server) = reg_query_str(base, "ProxyServer") else {
+        return;
+    };
+    let expected = format!("{HTTP_HOST}:{HTTP_PORT}");
+    if server == expected {
+        reg_set(base, "ProxyEnable", "0");
+        reg_delete(base, "ProxyServer");
+        reg_delete(base, "ProxyOverride");
+        refresh_windows_proxy();
+        info!(
+            "Reset stale Windows proxy (was pointing at {expected}) left over from prior session"
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn reg_query_str(key: &str, name: &str) -> Option<String> {
+    let output = windows_command("reg")
+        .args(["query", key, "/v", name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with(name) {
+            let parts: Vec<&str> = line.splitn(3, "    ").collect();
+            if parts.len() == 3 {
+                return Some(parts[2].trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -364,6 +454,47 @@ fn disable_macos() {
         "System proxy disabled via networksetup (service: {})",
         service
     );
+}
+
+#[cfg(target_os = "macos")]
+pub fn reset_stale_macos() {
+    let Some(service) = get_macos_network_service() else {
+        return;
+    };
+    // If the active SOCKS proxy points at our local port, reset everything.
+    if networksetup_proxy_points_at_us(&service, "-getsocksfirewallproxy") {
+        networksetup(&["-setwebproxystate", &service, "off"]);
+        networksetup(&["-setsecurewebproxystate", &service, "off"]);
+        networksetup(&["-setsocksfirewallproxystate", &service, "off"]);
+        info!("Reset stale macOS proxy left over from prior session (service: {service})");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn networksetup_proxy_points_at_us(service: &str, getter: &str) -> bool {
+    let Ok(output) = Command::new("networksetup")
+        .args([getter, service])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut enabled = false;
+    let mut local = false;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("Enabled: ") {
+            enabled = v.trim() == "Yes";
+        } else if let Some(v) = line.strip_prefix("Server: ") {
+            let v = v.trim();
+            if v == SOCKS_HOST || v == HTTP_HOST || v == "localhost" {
+                local = true;
+            }
+        }
+    }
+    enabled && local
 }
 
 #[cfg(target_os = "macos")]

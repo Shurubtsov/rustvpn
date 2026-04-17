@@ -181,6 +181,59 @@ pub fn update_settings<R: Runtime>(app: AppHandle<R>, settings: AppSettings) -> 
     storage::save_settings(&app, &settings).map_err(|e| e.to_string())
 }
 
+/// Persist a new bypass-domain list. If a VPN session is active, rebuild the
+/// xray/TUN/gsettings stack so the new list takes effect immediately — without
+/// this, the running session keeps the list it was started with and edits in
+/// the UI silently do nothing until the user reconnects.
+///
+/// Returns `true` if a reconnect was performed, `false` if only the setting was
+/// saved (because there was no active session).
+#[tauri::command]
+pub fn apply_bypass_domains<R: Runtime>(
+    app: AppHandle<R>,
+    manager: State<'_, XrayManager>,
+    domains: Vec<String>,
+) -> Result<bool, String> {
+    let mut settings = storage::load_settings(&app).unwrap_or_default();
+    // Defense-in-depth against the frontend firing this on no-op changes: if
+    // the saved list already matches, don't touch the running session. A
+    // spurious stop→start cycle tears down xray and TUN for nothing and the
+    // user sees the VPN drop mid-session.
+    let unchanged = settings.bypass_domains == domains;
+    settings.bypass_domains = domains.clone();
+    storage::save_settings(&app, &settings).map_err(|e| e.to_string())?;
+
+    let status = manager.status().status;
+    let active = matches!(
+        status,
+        ConnectionStatus::Connected | ConnectionStatus::Connecting
+    );
+    if !active || unchanged {
+        return Ok(false);
+    }
+
+    log::info!("Reloading xray with new bypass domains ({} entries)", domains.len());
+
+    let server_id = settings.last_server_id.clone().ok_or_else(|| {
+        "No last_server_id; cannot reload bypass without a known server".to_string()
+    })?;
+    let servers = storage::load_servers(&app).map_err(|e| e.to_string())?;
+    let server = servers
+        .into_iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| format!("Server with id {server_id} not found"))?;
+
+    manager.stop().map_err(|e| e.to_string())?;
+    // Give TUN teardown a moment so hev-socks5-tunnel releases rvpn0 before
+    // the new xray+hev pair tries to recreate it.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    manager
+        .start(&app, &server, &domains)
+        .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
 // VPN detection
 #[tauri::command]
 pub fn detect_vpn_interfaces() -> Result<Vec<DetectedVpn>, String> {

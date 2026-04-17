@@ -358,12 +358,7 @@ impl XrayManager {
 
                         if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
-                            && mark_connected(
-                                &started_flag,
-                                &state,
-                                &server_name,
-                                &server_address,
-                            )
+                            && mark_connected(&started_flag, &state, &server_name, &server_address)
                         {
                             info!("xray connected successfully (detected from stdout)");
                             let domains = bypass_ref.lock().unwrap().clone();
@@ -388,12 +383,7 @@ impl XrayManager {
 
                         if !started_flag.load(std::sync::atomic::Ordering::Acquire)
                             && trimmed.contains("started")
-                            && mark_connected(
-                                &started_flag,
-                                &state,
-                                &server_name,
-                                &server_address,
-                            )
+                            && mark_connected(&started_flag, &state, &server_name, &server_address)
                         {
                             info!("xray connected successfully");
                             let domains = bypass_ref.lock().unwrap().clone();

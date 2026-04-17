@@ -70,6 +70,15 @@ export async function updateSettings(settings: AppSettings): Promise<void> {
 	await invoke<void>('update_settings', { settings });
 }
 
+/**
+ * Persist a new bypass-domain list and, if the VPN is currently active, restart
+ * the xray+TUN stack so the change takes effect immediately. Returns true if a
+ * reconnect was performed, false if only the setting was saved.
+ */
+export async function applyBypassDomains(domains: string[]): Promise<boolean> {
+	return await invoke<boolean>('apply_bypass_domains', { domains });
+}
+
 // VPN detection
 export async function detectVpnInterfaces(): Promise<DetectedVpn[]> {
 	return await invoke<DetectedVpn[]>('detect_vpn_interfaces');

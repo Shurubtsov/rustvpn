@@ -293,13 +293,16 @@
 						showToast(`Ignored ${invalid.length} invalid domain(s)`, 'error');
 					}
 					try {
-						await appSettings.setBypassDomains(valid);
+						const reloaded = await appSettings.setBypassDomains(valid);
+						if (reloaded) {
+							showToast('Reloaded VPN with new bypass list');
+						}
 					} catch (err) {
 						showToast(`Failed to save settings: ${err}`, 'error');
 					}
 				}}
 			></textarea>
-			<p class="text-[10px] text-muted-foreground/60 mt-0.5">These domains bypass the VPN tunnel (one per line). Reconnect to apply.</p>
+			<p class="text-[10px] text-muted-foreground/60 mt-0.5">These domains bypass the VPN tunnel (one per line). Applied immediately — the VPN auto-reloads if connected.</p>
 		</div>
 	</details>
 
