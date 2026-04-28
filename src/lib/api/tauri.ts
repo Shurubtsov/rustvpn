@@ -83,3 +83,18 @@ export async function applyBypassDomains(domains: string[]): Promise<boolean> {
 export async function detectVpnInterfaces(): Promise<DetectedVpn[]> {
 	return await invoke<DetectedVpn[]>('detect_vpn_interfaces');
 }
+
+// Mobile background-mode setup. On desktop these always resolve to true / no-op
+// because there is no Doze and no OEM background-activity policy to deal with.
+export async function isBatteryOptimizationIgnored(): Promise<boolean> {
+	return await invoke<boolean>('is_battery_optimization_ignored');
+}
+
+export async function requestIgnoreBatteryOptimization(): Promise<boolean> {
+	return await invoke<boolean>('request_ignore_battery_optimization');
+}
+
+export async function openOemBackgroundSettings(): Promise<{ opened: boolean; fallback: boolean }> {
+	const [opened, fallback] = await invoke<[boolean, boolean]>('open_oem_background_settings');
+	return { opened, fallback };
+}

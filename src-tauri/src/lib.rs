@@ -142,6 +142,9 @@ pub fn run() {
             uri::parse_vless_uri_cmd,
             uri::export_vless_uri,
             commands::detect_vpn_interfaces,
+            commands::is_battery_optimization_ignored,
+            commands::request_ignore_battery_optimization,
+            commands::open_oem_background_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

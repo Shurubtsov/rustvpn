@@ -1,4 +1,4 @@
-use crate::commands::{VpnStats, VpnStatus};
+use crate::commands::{BatteryOptResult, BatteryOptStatus, OemSettingsResult, VpnStats, VpnStatus};
 
 pub struct VpnPlugin<R: tauri::Runtime> {
     _phantom: std::marker::PhantomData<fn() -> R>,
@@ -36,5 +36,24 @@ impl<R: tauri::Runtime> VpnPlugin<R> {
 
     pub fn query_stats(&self) -> Result<VpnStats, crate::Error> {
         Ok(VpnStats::default())
+    }
+
+    // Desktop platforms have no Doze / battery-optimization concept and no
+    // OEM background-activity settings page, so these all return "yes, fine"
+    // defaults. The frontend can call them unconditionally without platform
+    // gating; the mobile prompts simply never trigger on desktop.
+    pub fn is_battery_optimization_ignored(&self) -> Result<BatteryOptStatus, crate::Error> {
+        Ok(BatteryOptStatus { ignored: true })
+    }
+
+    pub fn request_ignore_battery_optimization(&self) -> Result<BatteryOptResult, crate::Error> {
+        Ok(BatteryOptResult { granted: true })
+    }
+
+    pub fn open_oem_background_settings(&self) -> Result<OemSettingsResult, crate::Error> {
+        Ok(OemSettingsResult {
+            opened: false,
+            fallback: false,
+        })
     }
 }
