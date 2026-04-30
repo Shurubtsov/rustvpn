@@ -258,17 +258,17 @@ pub fn request_ignore_battery_optimization<R: Runtime>(app: AppHandle<R>) -> Res
 }
 
 /// Best-effort deep-link to the OEM-specific "background activity" / "auto-launch"
-/// settings page (Realme/ColorOS, Xiaomi/MIUI, Huawei/EMUI, Vivo, Samsung). The
-/// returned `(opened, fallback)` pair lets the UI distinguish a precise hit
-/// from a fallback to the generic application-details screen.
+/// settings page (Realme/ColorOS, Xiaomi/MIUI, Huawei/EMUI, Vivo, Samsung).
+/// `opened` is whether any settings screen launched at all; `fallback` is true
+/// if we landed on the generic application-details screen instead of the
+/// OEM-specific page (so the UI can soften the success message).
 #[tauri::command]
 pub fn open_oem_background_settings<R: Runtime>(
     app: AppHandle<R>,
-) -> Result<(bool, bool), String> {
+) -> Result<tauri_plugin_vpn::OemSettingsResult, String> {
     use tauri_plugin_vpn::VpnPluginExt;
     app.vpn()
         .open_oem_background_settings()
-        .map(|r| (r.opened, r.fallback))
         .map_err(|e| e.to_string())
 }
 

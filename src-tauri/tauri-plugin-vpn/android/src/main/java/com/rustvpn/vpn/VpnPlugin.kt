@@ -49,6 +49,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
     private val bindLock = Object()
     private var bindLatch: CountDownLatch? = null
+
+    // pendingArgs is only ever touched on the main thread: written in
+    // startVpn() and read/cleared in onVpnPermissionResult(), both of which
+    // are dispatched there by the Tauri plugin runtime. Don't move the read
+    // into the worker thread used by startServiceAndBind without adding
+    // synchronization first.
     private var pendingArgs: StartVpnArgs? = null
 
     private val connection = object : ServiceConnection {
@@ -274,6 +280,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(JSObject().put("ignored", ignored))
     }
 
+    // BatteryLife lint flags ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS because
+    // Play Store rejects most apps that use it. VPN apps are an explicitly
+    // permitted exception in Google's policy, so suppress at the function level
+    // — that way moving the intent construction out of this body in the future
+    // doesn't silently re-trigger the warning at the new location.
+    @SuppressLint("BatteryLife")
     @Command
     fun requestIgnoreBatteryOptimization(invoke: Invoke) {
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -281,10 +293,6 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(JSObject().put("granted", true))
             return
         }
-        // BatteryLife lint flags this intent because Play Store rejects most
-        // apps that use it. VPN apps are explicitly listed as a permitted
-        // exemption in the policy, so suppress the warning.
-        @SuppressLint("BatteryLife")
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:${activity.packageName}")
         }

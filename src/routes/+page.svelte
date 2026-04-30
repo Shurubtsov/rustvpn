@@ -40,7 +40,7 @@
 	// user grants the exemption from the system dialog.
 	let showBgModal = $state(false);
 	let batteryOptIgnored = $state(true);
-	let pendingConnectServer: ServerConfig | null = null;
+	let pendingConnectServer = $state<ServerConfig | null>(null);
 
 	async function refreshVpnDetection() {
 		if (vpnDetecting) return;

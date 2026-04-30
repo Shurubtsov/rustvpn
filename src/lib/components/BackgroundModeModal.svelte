@@ -53,10 +53,6 @@
 		onClose(dontShowAgain);
 	}
 
-	function handleBackdropClick(e: MouseEvent) {
-		if (e.target === e.currentTarget) handleClose();
-	}
-
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') handleClose();
 	}
@@ -64,15 +60,22 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div
-	class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-	onclick={handleBackdropClick}
-	onkeydown={(e) => e.key === 'Escape' && handleClose()}
-	role="presentation"
-	tabindex="-1"
->
+<!--
+	Backdrop is a real <button> so the click-to-close interaction has correct
+	semantics (focusable, announced as a button, keyboard-activatable) without
+	tripping Svelte's a11y_no_static_element_interactions lint. The keydown
+	handler lives on <svelte:window> only — Escape is global, not scoped to the
+	backdrop, and the duplicate per-element listener was redundant.
+-->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+	<button
+		type="button"
+		class="absolute inset-0 w-full h-full cursor-default"
+		aria-label="Close dialog"
+		onclick={handleClose}
+	></button>
 	<div
-		class="w-full max-w-md bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+		class="relative w-full max-w-md bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
 		role="dialog"
 		aria-modal="true"
 		aria-label="Background mode setup"

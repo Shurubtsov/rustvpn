@@ -95,6 +95,5 @@ export async function requestIgnoreBatteryOptimization(): Promise<boolean> {
 }
 
 export async function openOemBackgroundSettings(): Promise<{ opened: boolean; fallback: boolean }> {
-	const [opened, fallback] = await invoke<[boolean, boolean]>('open_oem_background_settings');
-	return { opened, fallback };
+	return await invoke<{ opened: boolean; fallback: boolean }>('open_oem_background_settings');
 }

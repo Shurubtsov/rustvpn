@@ -48,19 +48,6 @@ class RustVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
 
     private val binder = object : IVpnService.Stub() {
-        override fun startVpn(configJson: String, socksPort: Int, serverAddress: String) {
-            // Re-enter via onStartCommand so the foreground promotion path is
-            // identical whether the activity invoked us directly or the OS
-            // redelivered the intent after a process restart.
-            val intent = Intent(this@RustVpnService, RustVpnService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_CONFIG_JSON, configJson)
-                putExtra(EXTRA_SOCKS_PORT, socksPort)
-                putExtra(EXTRA_SERVER_ADDRESS, serverAddress)
-            }
-            startForegroundService(intent)
-        }
-
         override fun stopVpn() {
             this@RustVpnService.stopVpnInternal()
         }

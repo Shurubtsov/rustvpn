@@ -6,10 +6,6 @@
 package com.rustvpn.vpn;
 
 interface IVpnService {
-    // Start the VPN with the given xray config. Returns immediately; callers
-    // should poll getStatusJson() to observe readiness.
-    void startVpn(String configJson, int socksPort, String serverAddress);
-
     // Tear down the VPN (xray + hev tunnel + TUN fd) and stop the foreground
     // service so the :vpn process can exit.
     void stopVpn();
@@ -20,4 +16,13 @@ interface IVpnService {
 
     // JSON: {"upload":long,"download":long}. Cumulative byte counters.
     String getStatsJson();
+
+    // NOTE: there is intentionally no startVpn() method here. Starting always
+    // goes through Activity.startForegroundService(intent) so the OS-side
+    // foreground promotion happens within Android's 5-second window — a
+    // bound-service IPC start would race with that timer. The activity passes
+    // the xray config via Intent extras; the service picks it up in
+    // onStartCommand. If a future flow needs to (re)start the tunnel via an
+    // existing binder, add it back here and have it re-issue the foreground
+    // intent so the timing guarantee is preserved.
 }
