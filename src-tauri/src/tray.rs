@@ -24,7 +24,19 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::err
         }
     });
 
+    // Tauri v2's TrayIconBuilder does NOT auto-derive an icon from the
+    // bundle config; without an explicit .icon() the tray entry renders
+    // as a blank slot on Windows (notification area), and as an empty
+    // placeholder on macOS (menu bar) and StatusNotifierItem-based Linux
+    // DEs. Pull the icon Tauri loaded from `tauri.conf.json:bundle.icon`
+    // at startup so the tray graphic stays in sync with the window icon.
+    let icon = app
+        .default_window_icon()
+        .ok_or("default window icon not configured in tauri.conf.json")?
+        .clone();
+
     TrayIconBuilder::new()
+        .icon(icon)
         .menu(&menu)
         .tooltip("RustVPN")
         .show_menu_on_left_click(false)
