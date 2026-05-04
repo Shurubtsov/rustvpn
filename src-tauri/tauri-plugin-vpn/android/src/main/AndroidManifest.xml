@@ -4,6 +4,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Required so we can deep-link the user to the system Battery Optimization
+         allowlist via Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS.
+         Without exemption, Doze and the standby buckets will eventually throttle
+         the VPN process even when its FGS notification is showing. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- extractNativeLibs must be true because libhev.so is loaded via dlopen() with a
          filesystem path and requires the native library to be extracted to disk, not kept
@@ -11,8 +16,22 @@
     <application
         android:extractNativeLibs="true"
         tools:replace="android:extractNativeLibs">
+        <!--
+            android:process=":vpn" is the single most important attribute on this
+            service. Aggressive OEM task killers (Realme/ColorOS, Xiaomi/MIUI,
+            Huawei/EMUI) kill the entire activity process when the user swipes the
+            app from recents — *regardless* of stopWithTask=false or the FGS
+            notification. By isolating the VpnService into its own process, the
+            kernel kills only the activity process; the VPN process (with the
+            running xray + hev tunnel) keeps the user's traffic flowing.
+
+            stopWithTask=false additionally tells stock Android not to bring down
+            the service with the activity's task. The FGS subtype property is
+            required for foregroundServiceType="specialUse" on API 34+.
+        -->
         <service
             android:name=".RustVpnService"
+            android:process=":vpn"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
             android:stopWithTask="false"

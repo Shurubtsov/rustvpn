@@ -8,65 +8,125 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import go.Seq
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
+import org.json.JSONObject
 import java.io.File
 
+// RustVpnService runs in the dedicated ":vpn" process (see AndroidManifest).
+// Because of that, the activity-side VpnPlugin and this service cannot share
+// statics — every interaction goes through the AIDL Stub returned from
+// onBind(). All previous "companion object" pending* fields are gone; the
+// VPN config travels via Intent extras instead, which lets the OS redeliver
+// it on START_REDELIVER_INTENT after a low-memory restart.
 class RustVpnService : VpnService() {
 
     companion object {
         const val TAG = "RustVpnService"
         const val ACTION_START = "com.rustvpn.vpn.START"
         const val ACTION_STOP = "com.rustvpn.vpn.STOP"
+        const val EXTRA_CONFIG_JSON = "configJson"
+        const val EXTRA_SOCKS_PORT = "socksPort"
+        const val EXTRA_SERVER_ADDRESS = "serverAddress"
         const val NOTIFICATION_CHANNEL_ID = "rustvpn_vpn_channel"
         const val NOTIFICATION_ID = 1
-
-        @Volatile
-        var isRunning = false
-
-        @Volatile
-        var lastError: String? = null
-
-        @Volatile
-        var pendingConfigJson: String? = null
-
-        @Volatile
-        var pendingSocksPort: Int = 10808
-
-        @Volatile
-        var pendingServerAddress: String? = null
-
-        @Volatile
-        var xrayRunning = false
-
-        @Volatile
-        var hevRunning = false
-
-        @Volatile
-        var tunActive = false
-
-        @Volatile
-        var xrayController: CoreController? = null
     }
 
+    // Per-instance mutable state. Lives in the :vpn process only — the activity
+    // side reads it via AIDL (getStatusJson / getStatsJson).
+    @Volatile private var isRunning = false
+    @Volatile private var lastError: String? = null
+    @Volatile private var xrayRunning = false
+    @Volatile private var hevRunning = false
+    @Volatile private var tunActive = false
+    @Volatile private var xrayController: CoreController? = null
     private var tunFd: ParcelFileDescriptor? = null
+
+    private val binder = object : IVpnService.Stub() {
+        override fun stopVpn() {
+            this@RustVpnService.stopVpnInternal()
+        }
+
+        override fun getStatusJson(): String {
+            // Re-check hev liveness on every poll — the tunnel thread can die
+            // independently of our flag if the SOCKS upstream dropped.
+            val hevLive = try { HevTunnel.nativeIsRunning() } catch (_: Throwable) { false }
+            val obj = JSONObject().apply {
+                put("is_running", isRunning)
+                put("last_error", lastError)
+                put("xray_running", xrayRunning)
+                put("hev_running", hevLive)
+                put("tun_active", tunActive)
+            }
+            return obj.toString()
+        }
+
+        override fun getStatsJson(): String {
+            var upload = 0L
+            var download = 0L
+            try {
+                val controller = xrayController
+                if (controller != null) {
+                    upload = controller.queryStats("proxy", "uplink")
+                    download = controller.queryStats("proxy", "downlink")
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "queryStats failed", e)
+            }
+            return JSONObject().apply {
+                put("upload", upload)
+                put("download", download)
+            }.toString()
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        // The system VPN framework binds with action="android.net.VpnService" —
+        // for that path we return the default VpnService binder so VpnService.prepare
+        // and the system VPN dialog continue to work. For our own AIDL bind
+        // (no action set on the Intent), return our IVpnService.Stub so the
+        // activity can issue startVpn / stopVpn / getStatus over IPC.
+        return if (intent?.action == SERVICE_INTERFACE) {
+            super.onBind(intent)
+        } else {
+            binder
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                // Must start foreground immediately on the main thread (Android requires this
-                // within 5 seconds of startForegroundService), then do heavy work in background.
+                val configJson = intent.getStringExtra(EXTRA_CONFIG_JSON)
+                val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, 10808)
+                val serverAddress = intent.getStringExtra(EXTRA_SERVER_ADDRESS) ?: ""
+                if (configJson.isNullOrBlank()) {
+                    // Either a buggy caller or START_REDELIVER_INTENT redelivered
+                    // a stripped intent. Don't enter foreground without a config —
+                    // we'd just sit there holding a notification with nothing
+                    // running. Stop so the OS releases us cleanly.
+                    Log.w(TAG, "ACTION_START with no config; stopping")
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+
+                // Foreground promotion must happen on the main thread within ~5s
+                // of startForegroundService, so do it before any heavy work.
                 createNotificationChannel()
                 startInForeground()
-                Thread { startVpn() }.start()
+                Thread { startVpn(configJson, socksPort, serverAddress) }.start()
             }
-            ACTION_STOP -> stopVpn()
+            ACTION_STOP -> stopVpnInternal()
         }
-        return START_STICKY
+        // START_REDELIVER_INTENT (vs START_STICKY) makes the OS hand us back the
+        // original intent — with the config extras intact — if it has to recreate
+        // the service after a low-memory kill. With START_STICKY the redelivered
+        // intent would be null and we'd be unable to resume the tunnel.
+        return START_REDELIVER_INTENT
     }
 
     private fun startInForeground() {
@@ -86,27 +146,25 @@ class RustVpnService : VpnService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // User swiped the app from recents. Do NOT stop the VPN — re-assert foreground
-        // state so aggressive OEM killers (Xiaomi/Huawei/Samsung) are less likely to
-        // reap the process, and the VPN keeps routing traffic in the background.
-        Log.i(TAG, "onTaskRemoved: keeping VPN alive in background")
+        // Activity task swiped from recents. With android:process=":vpn" the
+        // activity's process death no longer drags us with it, but stock Android
+        // still calls onTaskRemoved on bound services from the same package.
+        // Re-assert foreground state defensively in case the system tries to
+        // tear us down.
+        Log.i(TAG, "onTaskRemoved: keeping VPN alive in :vpn process")
         if (isRunning) {
             startInForeground()
         }
         super.onTaskRemoved(rootIntent)
     }
 
-    private fun startVpn() {
+    private fun startVpn(configJson: String, socksPort: Int, serverAddress: String) {
         try {
             lastError = null
             isRunning = false
             xrayRunning = false
             hevRunning = false
             tunActive = false
-
-            val configJson = pendingConfigJson
-                ?: throw IllegalStateException("No VPN config provided")
-            val socksPort = pendingSocksPort
 
             val nativeLibDir = applicationInfo.nativeLibraryDir
 
@@ -133,7 +191,7 @@ class RustVpnService : VpnService() {
             val controller = Libv2ray.newCoreController(handler)
             // tunFd=0 tells xray not to use built-in TUN; xray only opens SOCKS5 on port $socksPort.
             // hev-socks5-tunnel bridges TUN→SOCKS5 separately.
-            Log.i(TAG, "Starting xray in-process via libv2ray AAR...")
+            Log.i(TAG, "Starting xray in-process via libv2ray AAR... server=$serverAddress")
             controller.startLoop(configJson, 0)
             xrayController = controller
             Log.i(TAG, "xray started in-process via libv2ray AAR")
@@ -201,7 +259,7 @@ class RustVpnService : VpnService() {
         }
     }
 
-    private fun stopVpn() {
+    private fun stopVpnInternal() {
         Log.i(TAG, "Stopping VPN")
         cleanup()
         isRunning = false
@@ -241,7 +299,7 @@ class RustVpnService : VpnService() {
 
     override fun onRevoke() {
         Log.i(TAG, "VPN permission revoked")
-        stopVpn()
+        stopVpnInternal()
         super.onRevoke()
     }
 

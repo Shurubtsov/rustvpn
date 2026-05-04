@@ -15,7 +15,7 @@ use desktop::VpnPlugin;
 #[cfg(mobile)]
 use mobile::VpnPlugin;
 
-pub use commands::{VpnStats, VpnStatus};
+pub use commands::{BatteryOptResult, BatteryOptStatus, OemSettingsResult, VpnStats, VpnStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -42,6 +42,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::stop_vpn,
             commands::get_vpn_status,
             commands::query_stats,
+            commands::is_battery_optimization_ignored,
+            commands::request_ignore_battery_optimization,
+            commands::open_oem_background_settings,
         ])
         .setup(|app, _api| {
             #[cfg(mobile)]

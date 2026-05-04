@@ -1,10 +1,9 @@
-use serde::de::DeserializeOwned;
 use tauri::{
     plugin::{PluginApi, PluginHandle},
-    AppHandle, Runtime,
+    Runtime,
 };
 
-use crate::commands::{VpnStats, VpnStatus};
+use crate::commands::{BatteryOptResult, BatteryOptStatus, OemSettingsResult, VpnStats, VpnStatus};
 
 #[cfg(target_os = "android")]
 const PLUGIN_IDENTIFIER: &str = "com.rustvpn.vpn";
@@ -57,6 +56,33 @@ impl<R: Runtime> VpnPlugin<R> {
     pub fn query_stats(&self) -> Result<VpnStats, crate::Error> {
         self.handle
             .run_mobile_plugin::<VpnStats>("queryStats", serde_json::json!({}))
+            .map_err(|e| crate::Error::PluginInvoke(e.to_string()))
+    }
+
+    pub fn is_battery_optimization_ignored(&self) -> Result<BatteryOptStatus, crate::Error> {
+        self.handle
+            .run_mobile_plugin::<BatteryOptStatus>(
+                "isBatteryOptimizationIgnored",
+                serde_json::json!({}),
+            )
+            .map_err(|e| crate::Error::PluginInvoke(e.to_string()))
+    }
+
+    pub fn request_ignore_battery_optimization(&self) -> Result<BatteryOptResult, crate::Error> {
+        self.handle
+            .run_mobile_plugin::<BatteryOptResult>(
+                "requestIgnoreBatteryOptimization",
+                serde_json::json!({}),
+            )
+            .map_err(|e| crate::Error::PluginInvoke(e.to_string()))
+    }
+
+    pub fn open_oem_background_settings(&self) -> Result<OemSettingsResult, crate::Error> {
+        self.handle
+            .run_mobile_plugin::<OemSettingsResult>(
+                "openOemBackgroundSettings",
+                serde_json::json!({}),
+            )
             .map_err(|e| crate::Error::PluginInvoke(e.to_string()))
     }
 }

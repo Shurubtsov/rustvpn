@@ -234,6 +234,44 @@ pub fn apply_bypass_domains<R: Runtime>(
     Ok(true)
 }
 
+/// Whether the OS already considers the app exempt from battery optimization.
+/// On desktop this is always true (no Doze), so the UI prompt is naturally
+/// skipped without a platform check.
+#[tauri::command]
+pub fn is_battery_optimization_ignored<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    use tauri_plugin_vpn::VpnPluginExt;
+    app.vpn()
+        .is_battery_optimization_ignored()
+        .map(|s| s.ignored)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the system Battery Optimization exemption dialog. Returns whether the
+/// exemption is in effect after the dialog is dismissed (true on desktop).
+#[tauri::command]
+pub fn request_ignore_battery_optimization<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    use tauri_plugin_vpn::VpnPluginExt;
+    app.vpn()
+        .request_ignore_battery_optimization()
+        .map(|r| r.granted)
+        .map_err(|e| e.to_string())
+}
+
+/// Best-effort deep-link to the OEM-specific "background activity" / "auto-launch"
+/// settings page (Realme/ColorOS, Xiaomi/MIUI, Huawei/EMUI, Vivo, Samsung).
+/// `opened` is whether any settings screen launched at all; `fallback` is true
+/// if we landed on the generic application-details screen instead of the
+/// OEM-specific page (so the UI can soften the success message).
+#[tauri::command]
+pub fn open_oem_background_settings<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<tauri_plugin_vpn::OemSettingsResult, String> {
+    use tauri_plugin_vpn::VpnPluginExt;
+    app.vpn()
+        .open_oem_background_settings()
+        .map_err(|e| e.to_string())
+}
+
 // VPN detection
 #[tauri::command]
 pub fn detect_vpn_interfaces() -> Result<Vec<DetectedVpn>, String> {
