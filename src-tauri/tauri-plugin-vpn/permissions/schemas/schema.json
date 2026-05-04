@@ -307,6 +307,30 @@
           "markdownDescription": "Denies the get_vpn_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the is_battery_optimization_ignored command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-is-battery-optimization-ignored",
+          "markdownDescription": "Enables the is_battery_optimization_ignored command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the is_battery_optimization_ignored command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-is-battery-optimization-ignored",
+          "markdownDescription": "Denies the is_battery_optimization_ignored command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_oem_background_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-oem-background-settings",
+          "markdownDescription": "Enables the open_oem_background_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_oem_background_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-oem-background-settings",
+          "markdownDescription": "Denies the open_oem_background_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the query_stats command without any pre-configured scope.",
           "type": "string",
           "const": "allow-query-stats",
@@ -317,6 +341,18 @@
           "type": "string",
           "const": "deny-query-stats",
           "markdownDescription": "Denies the query_stats command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_ignore_battery_optimization command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-ignore-battery-optimization",
+          "markdownDescription": "Enables the request_ignore_battery_optimization command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_ignore_battery_optimization command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-ignore-battery-optimization",
+          "markdownDescription": "Denies the request_ignore_battery_optimization command without any pre-configured scope."
         },
         {
           "description": "Enables the start_vpn command without any pre-configured scope.",

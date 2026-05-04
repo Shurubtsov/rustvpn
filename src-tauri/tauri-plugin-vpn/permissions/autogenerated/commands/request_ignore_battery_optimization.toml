@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-request-ignore-battery-optimization"
+description = "Enables the request_ignore_battery_optimization command without any pre-configured scope."
+commands.allow = ["request_ignore_battery_optimization"]
+
+[[permission]]
+identifier = "deny-request-ignore-battery-optimization"
+description = "Denies the request_ignore_battery_optimization command without any pre-configured scope."
+commands.deny = ["request_ignore_battery_optimization"]

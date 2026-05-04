@@ -36,6 +36,58 @@ Denies the get_vpn_status command without any pre-configured scope.
 <tr>
 <td>
 
+`vpn:allow-is-battery-optimization-ignored`
+
+</td>
+<td>
+
+Enables the is_battery_optimization_ignored command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpn:deny-is-battery-optimization-ignored`
+
+</td>
+<td>
+
+Denies the is_battery_optimization_ignored command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpn:allow-open-oem-background-settings`
+
+</td>
+<td>
+
+Enables the open_oem_background_settings command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpn:deny-open-oem-background-settings`
+
+</td>
+<td>
+
+Denies the open_oem_background_settings command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpn:allow-query-stats`
 
 </td>
@@ -55,6 +107,32 @@ Enables the query_stats command without any pre-configured scope.
 <td>
 
 Denies the query_stats command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpn:allow-request-ignore-battery-optimization`
+
+</td>
+<td>
+
+Enables the request_ignore_battery_optimization command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpn:deny-request-ignore-battery-optimization`
+
+</td>
+<td>
+
+Denies the request_ignore_battery_optimization command without any pre-configured scope.
 
 </td>
 </tr>
