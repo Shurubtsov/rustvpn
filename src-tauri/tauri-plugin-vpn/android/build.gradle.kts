@@ -23,6 +23,12 @@ android {
         }
     }
 
+    // AGP 8+ disables AIDL for library modules by default. We ship
+    // IVpnService.aidl for activity↔:vpn-process IPC, so opt in.
+    buildFeatures {
+        aidl = true
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
