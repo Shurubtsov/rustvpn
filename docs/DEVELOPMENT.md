@@ -18,13 +18,23 @@ Tauri requires several system libraries for the WebView and desktop integration:
 ```bash
 # Debian/Ubuntu
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-    librsvg2-dev patchelf
+    librsvg2-dev patchelf polkit
 
 # Arch / Manjaro
-sudo pacman -S webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg
+sudo pacman -S webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg polkit
 ```
 
 Refer to the [official Tauri prerequisites](https://tauri.app/start/prerequisites/) for macOS and Windows.
+
+### TUN mode helper (Linux only, optional)
+
+For the full system-VPN experience on Linux, RustVPN runs `hev-socks5-tunnel` as root via a small privileged helper (`rustvpn-helper`) launched through `pkexec`. Install the helper and its polkit rule once:
+
+```bash
+sudo ./scripts/install-helper.sh
+```
+
+This places `/usr/local/sbin/rustvpn-helper` and the policy file from `polkit/`. Without it, the app falls back to system-proxy mode (works for most apps, but not every TCP/UDP source).
 
 ### xray-core binary (required at runtime)
 
@@ -123,39 +133,59 @@ RustVPN/
 ├── src-tauri/                    # Rust backend (Tauri)
 │   ├── src/
 │   │   ├── main.rs               # Binary entry point
-│   │   ├── lib.rs                # Tauri builder, plugin registration, command handler
-│   │   ├── models.rs             # ServerConfig, RealitySettings, ConnectionInfo, AppError
+│   │   ├── lib.rs                # Tauri builder, plugin registration, startup recovery, command handler
+│   │   ├── models.rs             # ServerConfig, RealitySettings, ConnectionInfo, SpeedStats,
+│   │   │                         #   LogEntry, AppSettings, DetectedVpn, AppError
 │   │   ├── commands.rs           # All #[tauri::command] handlers
-│   │   ├── xray.rs               # XrayManager: spawn/kill xray sidecar, state machine
-│   │   ├── config.rs             # generate_client_config(): builds xray JSON config
-│   │   ├── storage.rs            # Load/save servers.json from OS config dir
+│   │   ├── xray.rs               # XrayManager: sidecar lifecycle, stats poller, log buffer
+│   │   ├── config.rs             # generate_client_config() + modify_config_for_android()
+│   │   ├── network.rs            # Corporate VPN detection (ip -j route show), DNS scrape
+│   │   ├── proxy.rs              # System proxy enable/disable (Linux/Win/macOS) — desktop only
+│   │   ├── tun.rs                # Linux TUN mode via rustvpn-helper / pkexec
+│   │   ├── tray.rs               # System tray menu (desktop only)
+│   │   ├── storage.rs            # Load/save servers.json + settings.json
 │   │   └── uri.rs                # VLESS URI parse and serialize
+│   ├── tauri-plugin-vpn/         # Custom plugin for Android VpnService (see Android Build below)
 │   ├── binaries/
 │   │   └── xray-<triple>         # xray-core binary (gitignored)
 │   ├── icons/                    # App icons for all platforms
 │   ├── Cargo.toml                # Rust dependencies
 │   └── tauri.conf.json           # Tauri configuration (window, bundle, sidecar)
 │
+├── scripts/                      # Helper installer + Android binary downloader
+│   ├── install-helper.sh         # Installs rustvpn-helper for Linux TUN mode
+│   ├── rustvpn-helper            # The privileged TUN helper itself
+│   └── download-android-binaries.sh
+├── polkit/                       # polkit rule for rustvpn-helper
+│
 ├── src/                          # Svelte 5 + SvelteKit frontend
 │   ├── routes/
 │   │   ├── +layout.ts            # prerender=true, ssr=false
 │   │   ├── +layout.svelte        # Root layout (CSS, favicon)
-│   │   └── +page.svelte          # Main page: composes all components
+│   │   ├── +page.svelte          # Main page: composes all components
+│   │   └── logs/+page.svelte     # Log viewer route
 │   ├── lib/
 │   │   ├── api/
 │   │   │   └── tauri.ts          # invoke() wrappers for all Tauri commands
 │   │   ├── types/
 │   │   │   └── index.ts          # TypeScript interfaces (mirrors Rust structs)
 │   │   ├── stores/
-│   │   │   ├── connection.svelte.ts  # Connection state store (polling, connect/disconnect)
-│   │   │   └── servers.svelte.ts     # Server list store (CRUD, selection, import/export)
+│   │   │   ├── connection.svelte.ts  # Connection state, polling, speed stats
+│   │   │   ├── servers.svelte.ts     # Server CRUD + selection + import/export
+│   │   │   └── settings.svelte.ts    # AppSettings with rollback-on-save-failure
 │   │   ├── components/
-│   │   │   ├── ConnectButton.svelte   # Round toggle button
-│   │   │   ├── StatusDisplay.svelte   # Status dot, timer, server info
-│   │   │   ├── ServerList.svelte      # Clickable server list
-│   │   │   ├── ServerForm.svelte      # Add/edit server modal
-│   │   │   ├── ImportExportBar.svelte # Import/Export toolbar
-│   │   │   └── UriInputModal.svelte   # Paste vless:// URI modal
+│   │   │   ├── ConnectButton.svelte
+│   │   │   ├── StatusDisplay.svelte
+│   │   │   ├── ServerList.svelte
+│   │   │   ├── ServerForm.svelte
+│   │   │   ├── ImportExportBar.svelte
+│   │   │   ├── UriInputModal.svelte
+│   │   │   ├── SpeedGraph.svelte         # Upload/download sparkline
+│   │   │   ├── LogViewer.svelte          # Tail of in-memory log buffer
+│   │   │   ├── BackgroundModeModal.svelte # Mobile battery/auto-launch prompt
+│   │   │   ├── ThemeToggle.svelte
+│   │   │   └── ui/                       # shadcn-svelte primitives
+│   │   ├── hooks/                # (reserved)
 │   │   ├── assets/
 │   │   │   └── favicon.svg
 │   │   ├── utils/
@@ -166,7 +196,10 @@ RustVPN/
 │   └── app.html                  # HTML shell
 │
 ├── docs/                         # Project documentation
-├── .claude/                      # Claude Code agent/skill configuration
+├── .claude/                      # Claude Code agents/skills/hooks
+├── creds/                        # Per-host VLESS credentials (gitignored)
+├── release-assets/               # Per-platform release artifacts (gitignored)
+├── Dockerfile.android            # Reproducible Android build environment
 ├── svelte.config.js              # SvelteKit adapter-static config
 ├── vite.config.ts                # Vite + Tailwind plugin config
 ├── tsconfig.json                 # TypeScript config
@@ -211,15 +244,20 @@ The generated xray JSON config is written to:
 
 On Linux this is typically `~/.local/share/com.rustvpn.app/xray_config.json`. The file is deleted on disconnect.
 
-### Server list storage
+### Server list and settings storage
 
-The server list is persisted as JSON in:
+Two JSON files are persisted in the OS app config directory:
 
 ```
-<app_config_dir>/servers.json
+<app_config_dir>/servers.json   # Vec<ServerConfig>
+<app_config_dir>/settings.json  # AppSettings (auto_connect, last_server_id, bypass_domains)
 ```
 
-On Linux: `~/.config/com.rustvpn.app/servers.json`
+On Linux: `~/.config/com.rustvpn.app/`. On startup, `lib.rs` reads `settings.json` and, if `auto_connect` is true, immediately reconnects to `last_server_id` (unless an Android `VpnService` is already running, in which case it adopts that session).
+
+### Hide-to-tray and auto-connect
+
+Closing the main window does **not** quit the app — `lib.rs` intercepts `WindowEvent::CloseRequested`, calls `prevent_close()`, and hides the window. The system tray (configured in `tray.rs`) keeps the connection alive in the background. Use the tray's **Quit** entry to actually exit, or send `SIGINT` via the terminal during `pnpm tauri dev`.
 
 ## Android Build
 
@@ -271,17 +309,20 @@ src-tauri/tauri-plugin-vpn/
 
 | Plugin | Purpose |
 |--------|---------|
-| `tauri-plugin-shell` | Spawns xray sidecar process (desktop) |
-| `tauri-plugin-vpn` | Android VPN service management (custom plugin) |
+| `tauri-plugin-shell` | Spawns xray sidecar process (desktop only) |
+| `tauri-plugin-vpn` | Android VpnService management (custom in-tree plugin) |
 | `tauri-plugin-dialog` | Open/save file dialogs for JSON import/export |
 | `tauri-plugin-fs` | Read/write files for JSON import/export |
-| `tauri-plugin-log` | Structured logging in debug builds |
+| `tauri-plugin-log` | Structured logging (debug builds only) |
+
+The `tauri` crate itself is enabled with the `tray-icon` feature so `tray.rs` can register a system tray menu on desktop builds.
 
 ## Key Rust Dependencies
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `tauri` | 2.10.0 | Desktop app framework |
+| `tauri` | 2.10.0 (feat. `tray-icon`) | Desktop/mobile app framework |
+| `tauri-build` | 2.5.4 | Build-script support for Tauri |
 | `serde` / `serde_json` | 1.0 | JSON serialization |
 | `thiserror` | 2 | Ergonomic error types |
 | `uuid` | 1 (v4 feature) | UUID generation for server IDs |

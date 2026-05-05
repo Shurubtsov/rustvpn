@@ -45,6 +45,25 @@ export interface ConnectionInfo {
   connected_since: number | null;  // Unix timestamp (seconds) of connect time
   error_message: string | null;    // Set when status is 'error'
 }
+
+export interface SpeedStats {
+  upload_speed: number;     // Bytes/second since last poll
+  download_speed: number;   // Bytes/second since last poll
+  total_upload: number;     // Cumulative bytes uploaded since connect
+  total_download: number;   // Cumulative bytes downloaded since connect
+}
+
+export interface LogEntry {
+  timestamp: number;        // Unix epoch seconds
+  level: string;            // "info" | "warn" | "error" (from xray output)
+  message: string;
+}
+
+export interface AppSettings {
+  auto_connect: boolean;             // If true, reconnect to last_server_id on startup
+  last_server_id: string | null;     // Internal UUID of the last-used server
+  bypass_domains: string[];          // Domains that must skip the VPN (direct route)
+}
 ```
 
 ---
@@ -230,6 +249,29 @@ export async function detectVpnInterfaces(): Promise<DetectedVpn[]>
 **Error cases:** None (returns empty array on failure).
 
 **Behavior:** Executes `ip -j route show`, parses the JSON output, identifies VPN interfaces by name prefix, collects their non-default routed subnets, and detects VPN server endpoint IPs from static `/32` host routes. This is also called automatically during `connect` — detected subnets are added to both gsettings ignore-hosts and xray routing rules.
+
+On Android the command always returns `Ok(Vec::new())` — no kernel route inspection is available.
+
+---
+
+### `get_speed_stats`
+
+Polls xray's StatsService (`127.0.0.1:10085`) for cumulative outbound traffic counters and computes instantaneous up/down speed by diffing against the previous poll.
+
+**Rust signature:**
+```rust
+pub async fn get_speed_stats(app: AppHandle<R>, manager: State<'_, XrayManager>) -> Result<SpeedStats, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function getSpeedStats(): Promise<SpeedStats>
+// invoke('get_speed_stats')
+```
+
+**Returns:** `Promise<SpeedStats>` — zeroed when no session is active. `connectionStore` polls this once per second while connected; `SpeedGraph.svelte` renders the result as a sparkline.
+
+**Error cases:** Returns the cached snapshot if the StatsService poll fails (e.g. xray is starting up).
 
 ---
 
@@ -474,6 +516,159 @@ vless://UUID@ADDRESS:PORT?encryption=none&flow=FLOW&type=tcp&security=reality&sn
 ```
 
 All string values are percent-encoded. The `name` fragment uses `%20` for spaces (uppercase hex in percent-encoded output).
+
+---
+
+## Settings & Logs Commands
+
+### `get_settings`
+
+Loads `AppSettings` from `<app_config_dir>/settings.json`. Returns defaults if no file exists.
+
+**Rust signature:**
+```rust
+pub fn get_settings(app: AppHandle<R>) -> Result<AppSettings, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function getSettings(): Promise<AppSettings>
+// invoke('get_settings')
+```
+
+**Defaults:** `auto_connect = false`, `last_server_id = null`, `bypass_domains = ["claude.ai", "anthropic.com", "api.anthropic.com", "wb.ru", "wildberries.ru"]`.
+
+---
+
+### `update_settings`
+
+Writes the full `AppSettings` blob to disk. Use this for `auto_connect` and `last_server_id` changes — for `bypass_domains`, prefer `apply_bypass_domains` (which also reloads a live session).
+
+**Rust signature:**
+```rust
+pub fn update_settings(app: AppHandle<R>, settings: AppSettings) -> Result<(), String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function updateSettings(settings: AppSettings): Promise<void>
+// invoke('update_settings', { settings })
+```
+
+---
+
+### `apply_bypass_domains`
+
+Persists a new bypass-domain list. If a VPN session is currently active, the running xray + TUN stack is torn down and restarted with the new list — otherwise edits in the UI silently do nothing until the user reconnects manually.
+
+**Rust signature:**
+```rust
+pub fn apply_bypass_domains(app: AppHandle<R>, manager: State<'_, XrayManager>, domains: Vec<String>) -> Result<bool, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function applyBypassDomains(domains: string[]): Promise<boolean>
+// invoke('apply_bypass_domains', { domains })
+```
+
+**Returns:** `true` if the live session was reloaded; `false` if only the setting was saved (no active session, or the new list is identical to the saved one).
+
+**Error cases:**
+- `"No last_server_id; cannot reload bypass without a known server"`
+- `"Server with id <id> not found"`
+- xray start/stop errors
+
+---
+
+### `get_logs`
+
+Returns the in-memory ring buffer of xray log lines (capacity 1000).
+
+**Rust signature:**
+```rust
+pub fn get_logs(manager: State<'_, XrayManager>) -> Result<Vec<LogEntry>, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function getLogs(): Promise<LogEntry[]>
+// invoke('get_logs')
+```
+
+---
+
+### `clear_logs`
+
+Empties the in-memory log buffer. Does not stop log collection.
+
+**Rust signature:**
+```rust
+pub fn clear_logs(manager: State<'_, XrayManager>) -> Result<(), String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function clearLogs(): Promise<void>
+// invoke('clear_logs')
+```
+
+---
+
+## Mobile Background-Mode Commands
+
+These commands are wired up on every platform, but on desktop they always succeed with a no-op result (there's no Doze and no OEM auto-launch policy to negotiate). The `BackgroundModeModal` component uses them to walk Android users through the permissions needed to keep the VPN running while the app is backgrounded.
+
+### `is_battery_optimization_ignored`
+
+**Rust signature:**
+```rust
+pub fn is_battery_optimization_ignored(app: AppHandle<R>) -> Result<bool, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function isBatteryOptimizationIgnored(): Promise<boolean>
+// invoke('is_battery_optimization_ignored')
+```
+
+**Returns:** `true` if the app is already exempt from Android battery optimization, `false` if the user still needs to grant the exemption. Always `true` on desktop.
+
+---
+
+### `request_ignore_battery_optimization`
+
+Opens the system Battery Optimization exemption dialog and resolves with whether the exemption is in effect after dismissal.
+
+**Rust signature:**
+```rust
+pub fn request_ignore_battery_optimization(app: AppHandle<R>) -> Result<bool, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function requestIgnoreBatteryOptimization(): Promise<boolean>
+// invoke('request_ignore_battery_optimization')
+```
+
+---
+
+### `open_oem_background_settings`
+
+Best-effort deep-link to the OEM-specific "background activity" or "auto-launch" settings page (Realme/ColorOS, Xiaomi/MIUI, Huawei/EMUI, Vivo, Samsung).
+
+**Rust signature:**
+```rust
+pub fn open_oem_background_settings(app: AppHandle<R>) -> Result<OemSettingsResult, String>
+```
+
+**TypeScript wrapper:**
+```typescript
+export async function openOemBackgroundSettings(): Promise<{ opened: boolean; fallback: boolean }>
+// invoke('open_oem_background_settings')
+```
+
+**Returns:** `opened` is `true` if any settings screen launched; `fallback` is `true` if we landed on the generic application-details screen rather than the OEM-specific page (so the UI can soften the success message).
 
 ---
 
