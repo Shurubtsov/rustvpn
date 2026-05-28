@@ -13,6 +13,10 @@ export interface ServerConfig {
 	uuid: string;
 	flow: string;
 	reality: RealitySettings;
+	/** Transport: "tcp" (REALITY + XTLS-Vision) or "xhttp" (REALITY over XHTTP, DPI-resistant). */
+	network: string;
+	/** XHTTP request path; only used when network === "xhttp". */
+	xhttp_path: string;
 }
 
 export type ConnectionStatus =

@@ -5,6 +5,10 @@ fn generate_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn default_network() -> String {
+    "tcp".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "generate_id")]
@@ -15,6 +19,13 @@ pub struct ServerConfig {
     pub uuid: String,
     pub flow: String,
     pub reality: RealitySettings,
+    /// Transport: "tcp" (REALITY + XTLS-Vision) or "xhttp" (REALITY over XHTTP,
+    /// which disguises traffic as plain HTTP to survive DPI session-freezing).
+    #[serde(default = "default_network")]
+    pub network: String,
+    /// XHTTP request path; only meaningful when `network == "xhttp"`. Empty → "/".
+    #[serde(default)]
+    pub xhttp_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +92,13 @@ impl ServerConfig {
             return Err("Reality short_id must not be empty".to_string());
         }
 
+        if self.network != "tcp" && self.network != "xhttp" {
+            return Err(format!(
+                "Unsupported transport '{}' (expected 'tcp' or 'xhttp')",
+                self.network
+            ));
+        }
+
         Ok(())
     }
 
@@ -123,6 +141,8 @@ impl Default for ServerConfig {
             uuid: String::new(),
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
+            network: default_network(),
+            xhttp_path: String::new(),
         }
     }
 }
@@ -225,6 +245,8 @@ mod tests {
                 server_name: "example.com".to_string(),
                 fingerprint: "chrome".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         }
     }
 
@@ -313,6 +335,43 @@ mod tests {
         assert_eq!(config.flow, "xtls-rprx-vision");
         assert_eq!(config.reality.server_name, "www.google.com");
         assert_eq!(config.reality.fingerprint, "chrome");
+        assert_eq!(config.network, "tcp");
+        assert_eq!(config.xhttp_path, "");
+    }
+
+    #[test]
+    fn server_config_legacy_json_defaults_to_tcp() {
+        // Configs persisted before the transport fields existed must still load,
+        // defaulting to plain TCP REALITY.
+        let legacy = r#"{
+            "id": "x",
+            "name": "Old",
+            "address": "1.2.3.4",
+            "port": 443,
+            "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "flow": "xtls-rprx-vision",
+            "reality": { "public_key": "k", "short_id": "s", "server_name": "ya.ru", "fingerprint": "chrome" }
+        }"#;
+        let config: ServerConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(config.network, "tcp");
+        assert_eq!(config.xhttp_path, "");
+    }
+
+    #[test]
+    fn validate_xhttp_network_ok() {
+        let mut config = sample_server_config();
+        config.network = "xhttp".to_string();
+        config.flow = String::new();
+        config.xhttp_path = "/xhttp".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_unknown_network_rejected() {
+        let mut config = sample_server_config();
+        config.network = "grpc".to_string();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("transport"));
     }
 
     #[test]

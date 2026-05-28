@@ -52,6 +52,56 @@ pub fn generate_client_config(
         vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")]
     };
 
+    // REALITY settings are identical across transports; only the stream wrapper differs.
+    let reality_settings = json!({
+        "show": false,
+        "fingerprint": server.reality.fingerprint,
+        "serverName": server.reality.server_name,
+        "publicKey": server.reality.public_key,
+        "shortId": server.reality.short_id
+    });
+
+    let is_xhttp = server.network == "xhttp";
+
+    // TCP keepalive so xray detects a server connection that has silently gone
+    // dead (e.g. after an ISP daily session/IP reset) instead of hanging on a
+    // black-holed socket forever — the main cause of "connected but 0 KB/s".
+    let sockopt = json!({
+        "tcpKeepAliveIdle": 30,
+        "tcpKeepAliveInterval": 15
+    });
+
+    // XHTTP disguises the tunnel as ordinary HTTP, which survives the TCP
+    // session-freezing that DPI applies to raw-TCP REALITY. XTLS-Vision flow
+    // only works over raw TCP, so XHTTP must connect with an empty flow.
+    let (stream_settings, user_flow): (Value, &str) = if is_xhttp {
+        let path = if server.xhttp_path.trim().is_empty() {
+            "/"
+        } else {
+            server.xhttp_path.trim()
+        };
+        (
+            json!({
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": reality_settings,
+                "xhttpSettings": { "path": path, "mode": "auto" },
+                "sockopt": sockopt
+            }),
+            "",
+        )
+    } else {
+        (
+            json!({
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": reality_settings,
+                "sockopt": sockopt
+            }),
+            server.flow.as_str(),
+        )
+    };
+
     let mut config: Value = json!({
         "log": {
             "loglevel": "info"
@@ -108,24 +158,14 @@ pub fn generate_client_config(
                             "users": [
                                 {
                                     "id": server.uuid,
-                                    "flow": server.flow,
+                                    "flow": user_flow,
                                     "encryption": "none"
                                 }
                             ]
                         }
                     ]
                 },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
-                    "realitySettings": {
-                        "show": false,
-                        "fingerprint": server.reality.fingerprint,
-                        "serverName": server.reality.server_name,
-                        "publicKey": server.reality.public_key,
-                        "shortId": server.reality.short_id
-                    }
-                }
+                "streamSettings": stream_settings
             },
             {
                 "tag": "direct",
@@ -282,18 +322,24 @@ pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> 
     let mut config: serde_json::Value =
         serde_json::from_str(config_json).map_err(AppError::from)?;
 
-    // Add sockopt to proxy outbound
+    // Merge mark=255 into the proxy outbound's sockopt. Merge rather than replace
+    // so the TCP keepalive sockopt set by generate_client_config survives.
     if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
         for outbound in outbounds.iter_mut() {
             if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
-                outbound
+                let sockopt = outbound
                     .as_object_mut()
                     .unwrap()
                     .entry("streamSettings")
                     .or_insert(serde_json::json!({}))
                     .as_object_mut()
                     .unwrap()
-                    .insert("sockopt".to_string(), serde_json::json!({ "mark": 255 }));
+                    .entry("sockopt")
+                    .or_insert(serde_json::json!({}));
+                sockopt
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("mark".to_string(), serde_json::json!(255));
             }
         }
     }
@@ -326,6 +372,8 @@ mod tests {
                 server_name: "www.microsoft.com".to_string(),
                 fingerprint: "chrome".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
 
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
@@ -462,6 +510,8 @@ mod tests {
                 server_name: "example.com".to_string(),
                 fingerprint: "chrome".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let parsed: Result<Value, _> = serde_json::from_str(&config_str);
@@ -481,6 +531,8 @@ mod tests {
             uuid: "cafe0000-cafe-cafe-cafe-cafe00000000".to_string(),
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -509,6 +561,8 @@ mod tests {
                 server_name: "www.cloudflare.com".to_string(),
                 fingerprint: "safari".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -721,6 +775,8 @@ mod tests {
             uuid: "00000000-0000-0000-0000-000000000000".to_string(),
             flow: "xtls-rprx-vision".to_string(),
             reality: RealitySettings::default(),
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -757,5 +813,64 @@ mod tests {
         let system = &config["policy"]["system"];
         assert_eq!(system["statsOutboundUplink"], true);
         assert_eq!(system["statsOutboundDownlink"], true);
+    }
+
+    #[test]
+    fn test_config_xhttp_transport() {
+        let server = ServerConfig {
+            id: "xhttp-id".to_string(),
+            name: "X".to_string(),
+            address: "45.151.233.107".to_string(),
+            port: 36712,
+            uuid: "d6c5bf01-c90d-4094-bb27-cb8f966af8e4".to_string(),
+            // A stale Vision flow must be ignored for xhttp.
+            flow: "xtls-rprx-vision".to_string(),
+            reality: RealitySettings {
+                public_key: "pbk".to_string(),
+                short_id: "713a3828823be899".to_string(),
+                server_name: "ya.ru".to_string(),
+                fingerprint: "chrome".to_string(),
+            },
+            network: "xhttp".to_string(),
+            xhttp_path: "/xhttp".to_string(),
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        let stream = &config["outbounds"][0]["streamSettings"];
+        assert_eq!(stream["network"], "xhttp");
+        assert_eq!(stream["security"], "reality");
+        assert_eq!(stream["xhttpSettings"]["path"], "/xhttp");
+        assert_eq!(stream["realitySettings"]["serverName"], "ya.ru");
+        // Vision flow must be cleared for xhttp transport.
+        assert_eq!(
+            config["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
+            ""
+        );
+    }
+
+    #[test]
+    fn test_config_xhttp_empty_path_defaults_to_root() {
+        let server = ServerConfig {
+            network: "xhttp".to_string(),
+            xhttp_path: String::new(),
+            ..ServerConfig::default()
+        };
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+        assert_eq!(
+            config["outbounds"][0]["streamSettings"]["xhttpSettings"]["path"],
+            "/"
+        );
+    }
+
+    #[test]
+    fn test_config_has_tcp_keepalive() {
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+        let sockopt = &config["outbounds"][0]["streamSettings"]["sockopt"];
+        assert_eq!(sockopt["tcpKeepAliveIdle"], 30);
+        assert_eq!(sockopt["tcpKeepAliveInterval"], 15);
     }
 }

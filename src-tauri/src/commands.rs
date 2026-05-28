@@ -212,7 +212,10 @@ pub fn apply_bypass_domains<R: Runtime>(
         return Ok(false);
     }
 
-    log::info!("Reloading xray with new bypass domains ({} entries)", domains.len());
+    log::info!(
+        "Reloading xray with new bypass domains ({} entries)",
+        domains.len()
+    );
 
     let server_id = settings.last_server_id.clone().ok_or_else(|| {
         "No last_server_id; cannot reload bypass without a known server".to_string()
@@ -304,6 +307,8 @@ mod tests {
                 server_name: "example.com".to_string(),
                 fingerprint: "chrome".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         }
     }
 

@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
@@ -35,6 +37,9 @@ class RustVpnService : VpnService() {
         const val EXTRA_SERVER_ADDRESS = "serverAddress"
         const val NOTIFICATION_CHANNEL_ID = "rustvpn_vpn_channel"
         const val NOTIFICATION_ID = 1
+        // Health-watchdog cadence: probe every 60s, restart after 3 straight fails.
+        const val PROBE_INTERVAL_MS = 60_000L
+        const val FAILURES_BEFORE_RESTART = 3
     }
 
     // Per-instance mutable state. Lives in the :vpn process only — the activity
@@ -46,6 +51,23 @@ class RustVpnService : VpnService() {
     @Volatile private var tunActive = false
     @Volatile private var xrayController: CoreController? = null
     private var tunFd: ParcelFileDescriptor? = null
+
+    // libv2ray's core env only needs initializing once per process; a watchdog
+    // restart must not re-run it.
+    @Volatile private var coreEnvInitialized = false
+
+    // Last successful start parameters, so the health watchdog can restart the
+    // tunnel with the same config after the path silently dies.
+    @Volatile private var curConfigJson: String? = null
+    @Volatile private var curSocksPort: Int = 10808
+    @Volatile private var curServerAddress: String = ""
+
+    // Bumped whenever the tunnel is torn down or (re)started; a watchdog thread
+    // exits as soon as its captured generation is stale, so restarts never leave
+    // multiple watchdogs running.
+    @Volatile private var watchdogGen = 0
+
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val binder = object : IVpnService.Stub() {
         override fun stopVpn() {
@@ -166,6 +188,11 @@ class RustVpnService : VpnService() {
             hevRunning = false
             tunActive = false
 
+            // Remember params so the watchdog can restart with the same config.
+            curConfigJson = configJson
+            curSocksPort = socksPort
+            curServerAddress = serverAddress
+
             val nativeLibDir = applicationInfo.nativeLibraryDir
 
             // Verify hev library exists (xray is now loaded via AAR, no binary needed)
@@ -178,7 +205,10 @@ class RustVpnService : VpnService() {
             // 1. Start xray in-process via libv2ray AAR (no child process)
             Log.i(TAG, "Initializing libv2ray AAR...")
             Seq.setContext(applicationContext)
-            Libv2ray.initCoreEnv(filesDir.absolutePath, "")
+            if (!coreEnvInitialized) {
+                Libv2ray.initCoreEnv(filesDir.absolutePath, "")
+                coreEnvInitialized = true
+            }
 
             val handler = object : CoreCallbackHandler {
                 override fun startup(): Long = 0
@@ -247,6 +277,11 @@ class RustVpnService : VpnService() {
             isRunning = true
             Log.i(TAG, "VPN started successfully (xray=OK, hev=OK, tun=OK)")
 
+            // Recover from a silently-dead tunnel (e.g. ISP daily session/IP
+            // reset) without the user having to reconnect by hand.
+            registerNetworkCallback()
+            startWatchdog()
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
             lastError = e.message
@@ -272,6 +307,11 @@ class RustVpnService : VpnService() {
     }
 
     private fun cleanup() {
+        // Invalidate any running watchdog and stop reacting to network changes.
+        // A subsequent startVpn() re-arms both.
+        watchdogGen++
+        unregisterNetworkCallback()
+
         // Stop hev-socks5-tunnel via JNI
         try {
             if (HevTunnel.nativeIsRunning()) {
@@ -310,6 +350,121 @@ class RustVpnService : VpnService() {
         hevRunning = false
         tunActive = false
         super.onDestroy()
+    }
+
+    /// Background health monitor. Probes real end-to-end connectivity through the
+    /// SOCKS port; after repeated failures it restarts the tunnel. Mirrors the
+    /// desktop XrayManager watchdog.
+    private fun startWatchdog() {
+        val generation = ++watchdogGen
+        val socksPort = curSocksPort
+        Thread {
+            // Let the connection settle before the first probe.
+            try { Thread.sleep(PROBE_INTERVAL_MS) } catch (_: InterruptedException) { return@Thread }
+            var failures = 0
+            while (generation == watchdogGen && isRunning) {
+                if (probeThroughSocks(socksPort)) {
+                    failures = 0
+                } else {
+                    failures++
+                    Log.w(TAG, "[watchdog] connectivity probe failed ($failures/$FAILURES_BEFORE_RESTART)")
+                    if (failures >= FAILURES_BEFORE_RESTART) {
+                        if (generation == watchdogGen && isRunning) {
+                            Log.w(TAG, "[watchdog] tunnel is dead — restarting")
+                            restartTunnel()
+                        }
+                        return@Thread
+                    }
+                }
+                try { Thread.sleep(PROBE_INTERVAL_MS) } catch (_: InterruptedException) { return@Thread }
+            }
+        }.start()
+    }
+
+    /// Tear the tunnel down and bring it back up with the last-used config. Runs
+    /// on its own thread; startVpn() re-arms the watchdog and network callback.
+    private fun restartTunnel() {
+        val config = curConfigJson ?: return
+        val port = curSocksPort
+        val addr = curServerAddress
+        Thread {
+            cleanup()
+            try { Thread.sleep(2000) } catch (_: InterruptedException) {}
+            startVpn(config, port, addr)
+        }.start()
+    }
+
+    /// SOCKS5 CONNECT to an always-up host through the local proxy. A 0x00 reply
+    /// means xray actually carried the request to the server, so the tunnel is
+    /// alive. Any failure means it's dead.
+    private fun probeThroughSocks(port: Int): Boolean {
+        return try {
+            java.net.Socket().use { sock ->
+                sock.connect(java.net.InetSocketAddress("127.0.0.1", port), 8000)
+                sock.soTimeout = 8000
+                val out = sock.getOutputStream()
+                val inp = sock.getInputStream()
+                // Greeting: VER=5, one method, NO-AUTH.
+                out.write(byteArrayOf(0x05, 0x01, 0x00))
+                out.flush()
+                val method = ByteArray(2)
+                if (!readFully(inp, method) || method[0].toInt() != 0x05 || (method[1].toInt() and 0xFF) != 0x00) {
+                    false
+                } else {
+                    // CONNECT 1.1.1.1:443 (IPv4 literal — no DNS, always via proxy).
+                    out.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 1, 1, 1, 1, 0x01, 0xBB.toByte()))
+                    out.flush()
+                    // IPv4 bind reply is 10 bytes: VER REP RSV ATYP ADDR(4) PORT(2).
+                    val reply = ByteArray(10)
+                    if (!readFully(inp, reply)) {
+                        false
+                    } else {
+                        reply[0].toInt() == 0x05 && (reply[1].toInt() and 0xFF) == 0x00
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun readFully(inp: java.io.InputStream, buf: ByteArray): Boolean {
+        var off = 0
+        while (off < buf.size) {
+            val n = try { inp.read(buf, off, buf.size - off) } catch (_: Throwable) { return false }
+            if (n < 0) return false
+            off += n
+        }
+        return true
+    }
+
+    /// Track the default network so xray's (re)dialed connections follow the live
+    /// network after a Wi-Fi/ISP change instead of sticking to a dead one.
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                try { setUnderlyingNetworks(arrayOf(network)) } catch (_: Throwable) {}
+            }
+            override fun onLost(network: Network) {
+                try { setUnderlyingNetworks(null) } catch (_: Throwable) {}
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        } catch (e: Throwable) {
+            Log.w(TAG, "registerDefaultNetworkCallback failed", e)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb)
+        } catch (_: Throwable) {}
     }
 
     private fun waitForPort(port: Int, timeoutMs: Long) {

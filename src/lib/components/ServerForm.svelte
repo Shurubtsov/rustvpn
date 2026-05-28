@@ -21,6 +21,8 @@
 	let port = $state(untrack(() => server?.port ?? 443));
 	let uuid = $state(untrack(() => server?.uuid ?? ''));
 	let flow = $state(untrack(() => server?.flow ?? 'xtls-rprx-vision'));
+	let network = $state(untrack(() => server?.network ?? 'tcp'));
+	let xhttpPath = $state(untrack(() => server?.xhttp_path ?? ''));
 	let publicKey = $state(untrack(() => server?.reality.public_key ?? ''));
 	let shortId = $state(untrack(() => server?.reality.short_id ?? ''));
 	let serverName = $state(untrack(() => server?.reality.server_name ?? 'www.microsoft.com'));
@@ -46,19 +48,23 @@
 	function handleSubmit(e: Event) {
 		e.preventDefault();
 		if (!validate()) return;
+		const isXhttp = network === 'xhttp';
 		onSave({
 			id: server?.id ?? '',
 			name: name.trim() || address.trim(),
 			address: address.trim(),
 			port,
 			uuid: uuid.trim(),
-			flow: flow.trim(),
+			// XTLS-Vision flow only works over raw TCP; xHTTP must use an empty flow.
+			flow: isXhttp ? '' : flow.trim(),
 			reality: {
 				public_key: publicKey.trim(),
 				short_id: shortId.trim(),
 				server_name: serverName.trim(),
 				fingerprint: fingerprint.trim()
-			}
+			},
+			network,
+			xhttp_path: isXhttp ? xhttpPath.trim() : ''
 		});
 	}
 
@@ -170,17 +176,67 @@
 				</div>
 			</div>
 
-			<!-- Flow -->
+			<!-- Transport -->
 			<div class="flex flex-col gap-1">
-				<label for="sf-flow" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Flow</label>
-				<input
-					id="sf-flow"
-					type="text"
-					bind:value={flow}
-					placeholder="xtls-rprx-vision"
-					class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-				/>
+				<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Transport</span>
+				<div class="flex gap-2">
+					<button
+						type="button"
+						onclick={() => (network = 'tcp')}
+						class={cn(
+							'flex-1 py-2 rounded-lg border text-sm font-medium transition-colors',
+							network === 'tcp'
+								? 'border-zinc-500 bg-zinc-800/60 text-foreground'
+								: 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600'
+						)}
+						aria-pressed={network === 'tcp'}
+					>
+						TCP REALITY
+					</button>
+					<button
+						type="button"
+						onclick={() => (network = 'xhttp')}
+						class={cn(
+							'flex-1 py-2 rounded-lg border text-sm font-medium transition-colors',
+							network === 'xhttp'
+								? 'border-zinc-500 bg-zinc-800/60 text-foreground'
+								: 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600'
+						)}
+						aria-pressed={network === 'xhttp'}
+					>
+						xHTTP REALITY
+					</button>
+				</div>
+				<p class="text-[10px] text-muted-foreground/60">
+					xHTTP disguises the tunnel as plain HTTP — more resistant to mobile DPI throttling.
+				</p>
 			</div>
+
+			{#if network === 'tcp'}
+				<!-- Flow (raw TCP only) -->
+				<div class="flex flex-col gap-1">
+					<label for="sf-flow" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Flow</label>
+					<input
+						id="sf-flow"
+						type="text"
+						bind:value={flow}
+						placeholder="xtls-rprx-vision"
+						class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+					/>
+				</div>
+			{:else}
+				<!-- XHTTP path -->
+				<div class="flex flex-col gap-1">
+					<label for="sf-xhttp-path" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">XHTTP Path</label>
+					<input
+						id="sf-xhttp-path"
+						type="text"
+						bind:value={xhttpPath}
+						placeholder="/xhttp"
+						class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+					/>
+				</div>
+			{/if}
 
 			<!-- REALITY section -->
 			<div class="border border-border rounded-lg p-3 flex flex-col gap-3">

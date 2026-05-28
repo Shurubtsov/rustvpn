@@ -61,6 +61,8 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
     let mut fingerprint = "chrome".to_string();
     let mut public_key = String::new();
     let mut short_id = String::new();
+    let mut network = "tcp".to_string();
+    let mut xhttp_path = String::new();
 
     for param in query.split('&') {
         if param.is_empty() {
@@ -73,9 +75,23 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
                 "fp" => fingerprint = url_decode(value),
                 "pbk" => public_key = url_decode(value),
                 "sid" => short_id = url_decode(value),
-                _ => {} // ignore unknown params (encryption, type, security, etc.)
+                "type" => {
+                    // xray/v2ray spell the XHTTP transport variously; normalize them all.
+                    network = match url_decode(value).as_str() {
+                        "xhttp" | "http" | "splithttp" => "xhttp".to_string(),
+                        _ => "tcp".to_string(),
+                    };
+                }
+                "path" => xhttp_path = url_decode(value),
+                _ => {} // ignore unknown params (encryption, security, etc.)
             }
         }
+    }
+
+    // XTLS-Vision flow is only valid over raw TCP; drop it for XHTTP so the stored
+    // entry stays internally consistent.
+    if network == "xhttp" {
+        flow = String::new();
     }
 
     Ok(ServerConfig {
@@ -91,23 +107,45 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
             server_name: sni,
             fingerprint,
         },
+        network,
+        xhttp_path,
     })
 }
 
 pub fn to_vless_uri(server: &ServerConfig) -> String {
     let name = url_encode(&server.name);
-    format!(
-        "vless://{}@{}:{}?encryption=none&flow={}&type=tcp&security=reality&sni={}&fp={}&pbk={}&sid={}#{}",
-        server.uuid,
-        server.address,
-        server.port,
-        url_encode(&server.flow),
-        url_encode(&server.reality.server_name),
-        url_encode(&server.reality.fingerprint),
-        url_encode(&server.reality.public_key),
-        url_encode(&server.reality.short_id),
-        name,
-    )
+    if server.network == "xhttp" {
+        let path = if server.xhttp_path.trim().is_empty() {
+            "/"
+        } else {
+            server.xhttp_path.trim()
+        };
+        format!(
+            "vless://{}@{}:{}?encryption=none&type=xhttp&path={}&security=reality&sni={}&fp={}&pbk={}&sid={}#{}",
+            server.uuid,
+            server.address,
+            server.port,
+            url_encode(path),
+            url_encode(&server.reality.server_name),
+            url_encode(&server.reality.fingerprint),
+            url_encode(&server.reality.public_key),
+            url_encode(&server.reality.short_id),
+            name,
+        )
+    } else {
+        format!(
+            "vless://{}@{}:{}?encryption=none&flow={}&type=tcp&security=reality&sni={}&fp={}&pbk={}&sid={}#{}",
+            server.uuid,
+            server.address,
+            server.port,
+            url_encode(&server.flow),
+            url_encode(&server.reality.server_name),
+            url_encode(&server.reality.fingerprint),
+            url_encode(&server.reality.public_key),
+            url_encode(&server.reality.short_id),
+            name,
+        )
+    }
 }
 
 fn url_encode(s: &str) -> String {
@@ -188,6 +226,8 @@ mod tests {
                 server_name: "www.microsoft.com".to_string(),
                 fingerprint: "chrome".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         }
     }
 
@@ -353,6 +393,8 @@ mod tests {
                 server_name: "www.example.org".to_string(),
                 fingerprint: "firefox".to_string(),
             },
+            network: "tcp".to_string(),
+            xhttp_path: String::new(),
         };
 
         let uri = to_vless_uri(&server);
@@ -390,6 +432,56 @@ mod tests {
         let config = parse_vless_uri(uri).unwrap();
         assert_eq!(config.address, "1.2.3.4");
         assert_eq!(config.flow, "xtls-rprx-vision");
+    }
+
+    #[test]
+    fn parse_xhttp_uri() {
+        let uri = "vless://d6c5bf01-c90d-4094-bb27-cb8f966af8e4@45.151.233.107:36712?encryption=none&type=xhttp&path=%2Fxhttp&security=reality&sni=ya.ru&fp=chrome&pbk=YHFxtSGXra6I4LSWG2Hua1yyGXznPouZ7kV9osEfB0E&sid=713a3828823be899#NL%20xHTTP";
+        let config = parse_vless_uri(uri).unwrap();
+        assert_eq!(config.network, "xhttp");
+        assert_eq!(config.xhttp_path, "/xhttp");
+        assert_eq!(config.port, 36712);
+        assert_eq!(config.reality.server_name, "ya.ru");
+        // Vision flow must not survive on an xhttp entry.
+        assert_eq!(config.flow, "");
+        assert_eq!(config.name, "NL xHTTP");
+    }
+
+    #[test]
+    fn parse_xhttp_uri_drops_stray_flow() {
+        // Even if a flow is present, xhttp entries must clear it.
+        let uri = "vless://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee@1.2.3.4:8080?type=xhttp&path=%2Fp&flow=xtls-rprx-vision&sni=ya.ru&pbk=k&sid=s";
+        let config = parse_vless_uri(uri).unwrap();
+        assert_eq!(config.network, "xhttp");
+        assert_eq!(config.flow, "");
+    }
+
+    #[test]
+    fn roundtrip_xhttp() {
+        let server = ServerConfig {
+            id: "x".to_string(),
+            name: "NL xHTTP".to_string(),
+            address: "45.151.233.107".to_string(),
+            port: 36712,
+            uuid: "d6c5bf01-c90d-4094-bb27-cb8f966af8e4".to_string(),
+            flow: String::new(),
+            reality: RealitySettings {
+                public_key: "YHFxtSGXra6I4LSWG2Hua1yyGXznPouZ7kV9osEfB0E".to_string(),
+                short_id: "713a3828823be899".to_string(),
+                server_name: "ya.ru".to_string(),
+                fingerprint: "chrome".to_string(),
+            },
+            network: "xhttp".to_string(),
+            xhttp_path: "/xhttp".to_string(),
+        };
+        let uri = to_vless_uri(&server);
+        assert!(uri.contains("type=xhttp"));
+        assert!(uri.contains("path=%2Fxhttp"));
+        assert!(!uri.contains("flow="));
+        let parsed = parse_vless_uri(&uri).unwrap();
+        assert_eq!(parsed.network, "xhttp");
+        assert_eq!(parsed.xhttp_path, "/xhttp");
+        assert_eq!(parsed.reality.short_id, "713a3828823be899");
     }
 
     #[test]

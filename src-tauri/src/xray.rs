@@ -40,6 +40,13 @@ pub struct XrayManager {
     #[cfg(desktop)]
     bypass_subnets: Arc<Mutex<Vec<String>>>,
     detected_vpns: Arc<Mutex<Vec<DetectedVpn>>>,
+    /// Last server we connected with, so the health watchdog can reconnect.
+    #[cfg(desktop)]
+    last_server: Arc<Mutex<Option<ServerConfig>>>,
+    /// Bumped on every (re)connect; a watchdog exits when its generation is stale,
+    /// so reconnects never leave multiple watchdog threads stacked up.
+    #[cfg(desktop)]
+    watchdog_gen: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for XrayManager {
@@ -65,6 +72,10 @@ impl XrayManager {
             #[cfg(desktop)]
             bypass_subnets: Arc::new(Mutex::new(Vec::new())),
             detected_vpns: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(desktop)]
+            last_server: Arc::new(Mutex::new(None)),
+            #[cfg(desktop)]
+            watchdog_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -177,6 +188,12 @@ impl XrayManager {
         {
             let mut bd = self.bypass_domains.lock().unwrap();
             *bd = bypass_domains.to_vec();
+        }
+
+        // Remember the server so the health watchdog can reconnect to it later.
+        {
+            let mut ls = self.last_server.lock().unwrap();
+            *ls = Some(server.clone());
         }
 
         // Detect physical interface gateway and IP (for TUN routing on Linux)
@@ -647,7 +664,107 @@ impl XrayManager {
             });
         }
 
+        // Start the health watchdog that auto-reconnects a silently-dead tunnel.
+        self.spawn_watchdog(app);
+
         Ok(())
+    }
+
+    /// Background health monitor for the desktop tunnel.
+    ///
+    /// Long-lived REALITY connections can go silently dead — e.g. after the
+    /// ISP's daily session/IP reset the path to the server is gone but xray and
+    /// the UI still believe they're connected, so traffic just stops at 0 KB/s.
+    /// This probes real end-to-end connectivity and, after repeated failures,
+    /// tears the tunnel down and reconnects (which also re-adds the stale
+    /// server-IP route), so the user doesn't have to do it by hand.
+    #[cfg(desktop)]
+    fn spawn_watchdog<R: Runtime>(&self, app: &AppHandle<R>) {
+        use std::sync::atomic::Ordering;
+
+        // Claim a generation; a newer connect supersedes this watchdog.
+        let generation = self.watchdog_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let gen_ref = self.watchdog_gen.clone();
+        let state = self.state.clone();
+        let logs = self.logs.clone();
+        let app = app.clone();
+
+        std::thread::spawn(move || {
+            // Steady-state probe cadence and the failure streak that triggers a
+            // reconnect (~3 min of confirmed dead tunnel before acting).
+            const PROBE_INTERVAL: Duration = Duration::from_secs(60);
+            const FAILURES_BEFORE_RECONNECT: u32 = 3;
+
+            // Let the connection settle (the startup verify covers the first 15s).
+            std::thread::sleep(PROBE_INTERVAL);
+            let mut consecutive_failures: u32 = 0;
+
+            loop {
+                // Bail if a newer connection took over or we're no longer connected.
+                if gen_ref.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                {
+                    let s = state.lock().unwrap();
+                    if s.status != ConnectionStatus::Connected {
+                        return;
+                    }
+                }
+
+                if probe_through_socks(DEFAULT_SOCKS_PORT) {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures += 1;
+                    push_log_entry(
+                        &logs,
+                        "warning",
+                        &format!(
+                            "[watchdog] connectivity probe failed ({consecutive_failures}/{FAILURES_BEFORE_RECONNECT})"
+                        ),
+                    );
+
+                    if consecutive_failures >= FAILURES_BEFORE_RECONNECT {
+                        // Re-check the user hasn't disconnected in the meantime.
+                        {
+                            let s = state.lock().unwrap();
+                            if s.status != ConnectionStatus::Connected {
+                                return;
+                            }
+                        }
+
+                        push_log_entry(
+                            &logs,
+                            "warning",
+                            "[watchdog] tunnel is dead — auto-reconnecting",
+                        );
+                        warn!("[watchdog] tunnel dead after {consecutive_failures} failed probes, reconnecting");
+
+                        let manager = app.state::<XrayManager>();
+                        let server = manager.last_server.lock().unwrap().clone();
+                        let bypass = manager.bypass_domains.lock().unwrap().clone();
+                        let _ = manager.stop();
+                        // Brief pause so the OS releases the SOCKS port and process.
+                        std::thread::sleep(Duration::from_secs(2));
+                        if let Some(server) = server {
+                            match manager.start(&app, &server, &bypass) {
+                                Ok(()) => {
+                                    push_log_entry(&logs, "info", "[watchdog] reconnect initiated")
+                                }
+                                Err(e) => push_log_entry(
+                                    &logs,
+                                    "error",
+                                    &format!("[watchdog] reconnect failed: {e}"),
+                                ),
+                            }
+                        }
+                        // A successful start() spawns a fresh watchdog; this one is done.
+                        return;
+                    }
+                }
+
+                std::thread::sleep(PROBE_INTERVAL);
+            }
+        });
     }
 
     #[cfg(mobile)]
@@ -1162,6 +1279,49 @@ fn mark_connected(
     s.server_address = Some(server_address.to_string());
     s.error_message = None;
     true
+}
+
+/// Probe end-to-end tunnel health: perform a SOCKS5 CONNECT to an always-up
+/// host through the local proxy. A `0x00` reply means xray actually carried the
+/// request to the server and the server reached the target, so the tunnel is
+/// alive. Any failure (connect/handshake/timeout/non-zero reply) means it's dead.
+#[cfg(desktop)]
+fn probe_through_socks(port: u16) -> bool {
+    use std::io::{Read, Write};
+
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(socket_addr) = addr.parse() else {
+        return false;
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(8))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(8)));
+
+    // SOCKS5 greeting: VER=5, one method, NO-AUTH.
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return false;
+    }
+    let mut method = [0u8; 2];
+    if stream.read_exact(&mut method).is_err() || method != [0x05, 0x00] {
+        return false;
+    }
+
+    // CONNECT to 1.1.1.1:443 — an IPv4 literal (no DNS lookup needed) that always
+    // routes through the proxy outbound rather than the direct/bypass rules.
+    let request = [0x05, 0x01, 0x00, 0x01, 1, 1, 1, 1, 0x01, 0xBB];
+    if stream.write_all(&request).is_err() {
+        return false;
+    }
+    // The reply for an IPv4 bind address is 10 bytes: VER REP RSV ATYP ADDR(4) PORT(2).
+    let mut reply = [0u8; 10];
+    if stream.read_exact(&mut reply).is_err() {
+        return false;
+    }
+    // REP == 0x00 => the proxy established the upstream connection.
+    reply[0] == 0x05 && reply[1] == 0x00
 }
 
 fn push_log_entry(logs: &Arc<Mutex<VecDeque<LogEntry>>>, level: &str, message: &str) {
