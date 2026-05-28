@@ -228,6 +228,16 @@
 		}
 	}
 
+	// When the app returns to the foreground (notably on Android, where the
+	// WebView can suspend or leave the server list unpainted while backgrounded),
+	// reload the list so a new array reference forces the UI to repaint, and
+	// resync connection state.
+	function handleVisibilityChange() {
+		if (document.visibilityState !== 'visible') return;
+		servers.load().catch((e) => showToast(`Failed to reload servers: ${e}`, 'error'));
+		store.refresh();
+	}
+
 	onMount(async () => {
 		try {
 			await servers.load();
@@ -243,6 +253,7 @@
 		}
 		store.refresh();
 		store.startPolling();
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		if (isDesktop()) {
 			refreshVpnDetection();
 		}
@@ -251,6 +262,7 @@
 	onDestroy(() => {
 		store.stopPolling();
 		stopTimer();
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
 		if (toastTimer !== null) clearTimeout(toastTimer);
 	});
 </script>

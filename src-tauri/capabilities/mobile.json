@@ -3,6 +3,7 @@
   "identifier": "mobile",
   "description": "Permissions for mobile platforms",
   "platforms": ["android", "iOS"],
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
