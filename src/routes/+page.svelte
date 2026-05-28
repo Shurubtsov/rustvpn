@@ -104,6 +104,10 @@
 		if (store.isLoading || store.isTransitioning) return;
 		if (store.isConnected) {
 			await store.disconnectVpn();
+			// Some Android WebViews drop the server-list paint across the
+			// disconnect-triggered relayout; reloading forces a fresh array
+			// reference so the rows repaint instead of vanishing.
+			servers.load().catch(() => {});
 			return;
 		}
 		const selected = servers.selectedServer;
@@ -253,7 +257,11 @@
 		}
 		store.refresh();
 		store.startPolling();
+		// Several signals because no single one fires reliably across Android
+		// WebView resume: visibility, window focus, and bfcache restore.
 		document.addEventListener('visibilitychange', handleVisibilityChange);
+		window.addEventListener('focus', handleVisibilityChange);
+		window.addEventListener('pageshow', handleVisibilityChange);
 		if (isDesktop()) {
 			refreshVpnDetection();
 		}
@@ -263,6 +271,8 @@
 		store.stopPolling();
 		stopTimer();
 		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		window.removeEventListener('focus', handleVisibilityChange);
+		window.removeEventListener('pageshow', handleVisibilityChange);
 		if (toastTimer !== null) clearTimeout(toastTimer);
 	});
 </script>

@@ -17,6 +17,14 @@ function createServersStore() {
 	async function load() {
 		try {
 			const loaded = await api.getServers();
+			// Never let a transient empty read wipe an already-populated list. The
+			// UI can't delete down to zero, so getting [] back while we already hold
+			// servers is a backend hiccup (seen on Android resume), not real state —
+			// clobbering it is what makes the server row "disappear".
+			if (loaded.length === 0 && servers.length > 0) {
+				loadError = null;
+				return;
+			}
 			servers = loaded;
 			// Select first server if current selection is gone
 			if (selectedId === null || !loaded.some((s) => s.id === selectedId)) {
