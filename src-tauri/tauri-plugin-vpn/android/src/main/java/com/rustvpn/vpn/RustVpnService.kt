@@ -277,6 +277,11 @@ class RustVpnService : VpnService() {
             isRunning = true
             Log.i(TAG, "VPN started successfully (xray=OK, hev=OK, tun=OK)")
 
+            // Bind the tunnel to the real network so xray's own (excluded)
+            // outbound traffic routes out instead of black-holing — required on
+            // aggressive ROMs (ColorOS) where addDisallowedApplication alone
+            // leaves the VPN's traffic unrouted (connected but 0 B/s).
+            bindActiveUnderlyingNetwork()
             // Recover from a silently-dead tunnel (e.g. ISP daily session/IP
             // reset) without the user having to reconnect by hand.
             registerNetworkCallback()
@@ -436,6 +441,25 @@ class RustVpnService : VpnService() {
             off += n
         }
         return true
+    }
+
+    /// Pin the VPN's underlying transport to the current active network. Without
+    /// this, on some ROMs the excluded app's (xray's) sockets have no usable
+    /// route while the tunnel's 0.0.0.0/0 route is in place, so all proxy dials
+    /// time out and traffic sits at 0 B/s.
+    private fun bindActiveUnderlyingNetwork() {
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return
+            val active = cm.activeNetwork
+            if (active != null) {
+                setUnderlyingNetworks(arrayOf(active))
+                Log.i(TAG, "Bound VPN underlying network to active network")
+            } else {
+                Log.w(TAG, "No active network to bind underlying network to")
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "bindActiveUnderlyingNetwork failed", e)
+        }
     }
 
     /// Track the default network so xray's (re)dialed connections follow the live

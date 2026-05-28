@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required to query the active network and bind the VPN's underlying
+         network via setUnderlyingNetworks(). On aggressive ROMs (ColorOS etc.)
+         the VPN's own/excluded outbound traffic does not route to the real
+         network unless the underlying network is set explicitly — without this
+         permission that call throws SecurityException and the tunnel carries
+         0 B/s even though it reports connected. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Required so we can deep-link the user to the system Battery Optimization
