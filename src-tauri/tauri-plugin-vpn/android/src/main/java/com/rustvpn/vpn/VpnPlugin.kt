@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -46,6 +47,56 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     // anything — either the :vpn process never started, it died, or we have
     // not yet attempted to bind on this activity instance.
     @Volatile private var vpnService: IVpnService? = null
+
+    // WebView handle, captured in load(). On Android the Tauri WebView's
+    // renderer is paused while the app is backgrounded and does NOT reliably
+    // repaint on resume — the page stays on a stale/blank surface until a touch
+    // wakes the compositor (why the server list "vanished" until you tapped).
+    // JS visibility/focus events don't fire dependably here either, so we drive
+    // the repaint natively from the Activity onResume lifecycle.
+    @Volatile private var webView: WebView? = null
+
+    override fun load(webView: WebView) {
+        super.load(webView)
+        this.webView = webView
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val wv = webView
+        Log.i(TAG, "Activity onResume — nudging WebView repaint (webView=${wv != null})")
+        if (wv == null) return
+        wv.post {
+            try {
+                // Resume the WebView's own rendering pipeline + JS timers.
+                wv.onResume()
+                wv.resumeTimers()
+                // Let the frontend reload/remount the server list.
+                wv.evaluateJavascript(
+                    "window.dispatchEvent(new Event('tauri-resume'))",
+                    null
+                )
+                // Force the compositor to emit a fresh frame. invalidate() alone
+                // often just re-blits the stale surface; a 1px scroll-and-back is
+                // a compositor op (what a touch effectively does) that reliably
+                // wakes the renderer so the page actually paints.
+                wv.scrollBy(0, 1)
+                wv.scrollBy(0, -1)
+                wv.invalidate()
+            } catch (e: Throwable) {
+                Log.w(TAG, "onResume repaint failed", e)
+            }
+        }
+        // A beat later, once layout/JS have settled, nudge once more — some
+        // devices need the second frame to clear the stale surface.
+        wv.postDelayed({
+            try {
+                wv.scrollBy(0, 1)
+                wv.scrollBy(0, -1)
+                wv.invalidate()
+            } catch (_: Throwable) {}
+        }, 250)
+    }
 
     private val bindLock = Object()
     private var bindLatch: CountDownLatch? = null

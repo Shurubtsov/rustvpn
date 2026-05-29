@@ -289,6 +289,10 @@
 		document.addEventListener('visibilitychange', handleVisibilityChange);
 		window.addEventListener('focus', handleVisibilityChange);
 		window.addEventListener('pageshow', handleVisibilityChange);
+		// Android: the native VpnPlugin.onResume() dispatches this from the
+		// Activity lifecycle, since the WebView's own JS visibility events don't
+		// fire dependably on resume. This is the signal that actually lands.
+		window.addEventListener('tauri-resume', handleVisibilityChange);
 		if (isDesktop()) {
 			refreshVpnDetection();
 		}
@@ -300,6 +304,7 @@
 		document.removeEventListener('visibilitychange', handleVisibilityChange);
 		window.removeEventListener('focus', handleVisibilityChange);
 		window.removeEventListener('pageshow', handleVisibilityChange);
+		window.removeEventListener('tauri-resume', handleVisibilityChange);
 		if (toastTimer !== null) clearTimeout(toastTimer);
 	});
 </script>
