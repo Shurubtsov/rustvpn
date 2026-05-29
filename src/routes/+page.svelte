@@ -25,6 +25,9 @@
 	let elapsedSeconds = $state(0);
 	let timerInterval: ReturnType<typeof setInterval> | null = null;
 
+	// Bumped on resume to force-remount the server list (see handleVisibilityChange).
+	let serverListKey = $state(0);
+
 	// Form modal state
 	let showForm = $state(false);
 	let editingServer = $state<ServerConfig | null>(null);
@@ -232,14 +235,38 @@
 		}
 	}
 
+	// Force the Android WebView to actually repaint. On resume the DOM is
+	// up to date but the GPU compositor often keeps the previous (or blank)
+	// surface until a touch invalidates it — which is exactly why the server
+	// list only reappears after the user taps something. Nudging opacity makes
+	// the compositor redraw, without touching layout or fixed-position modals.
+	function forceRepaint() {
+		const el = document.body;
+		if (!el) return;
+		el.style.opacity = '0.9999';
+		void el.offsetHeight; // flush reflow so the toggle actually takes
+		requestAnimationFrame(() => {
+			el.style.opacity = '';
+		});
+	}
+
 	// When the app returns to the foreground (notably on Android, where the
 	// WebView can suspend or leave the server list unpainted while backgrounded),
-	// reload the list so a new array reference forces the UI to repaint, and
-	// resync connection state.
+	// reload the list, remount it so brand-new DOM nodes are inserted (the
+	// compositor must paint new nodes — a plain data update doesn't guarantee
+	// that here), force a repaint, and resync connection state.
 	function handleVisibilityChange() {
 		if (document.visibilityState !== 'visible') return;
-		servers.load().catch((e) => showToast(`Failed to reload servers: ${e}`, 'error'));
+		serverListKey++;
+		servers
+			.load()
+			.then(() => {
+				serverListKey++;
+			})
+			.catch((e) => showToast(`Failed to reload servers: ${e}`, 'error'));
 		store.refresh();
+		forceRepaint();
+		requestAnimationFrame(forceRepaint);
 	}
 
 	onMount(async () => {
@@ -291,7 +318,9 @@
 
 	<!-- Server list -->
 	<div class="w-full">
-		<ServerList onEdit={openEdit} onAdd={openAdd} />
+		{#key serverListKey}
+			<ServerList onEdit={openEdit} onAdd={openAdd} />
+		{/key}
 	</div>
 
 	<!-- Import/Export toolbar -->
