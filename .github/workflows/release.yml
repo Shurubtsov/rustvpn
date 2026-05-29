@@ -270,15 +270,13 @@ jobs:
             echo "WARNING: $APP_GRADLE not found, relying on manifest extractNativeLibs=true"
           fi
 
-      - name: Generate signing keystore
+      - name: Decode signing keystore
+        # Use the STABLE keystore stored in secrets so every release is signed
+        # with the same key — APKs then upgrade in-place instead of failing with
+        # INSTALL_FAILED_UPDATE_INCOMPATIBLE (which forced uninstall + data loss).
         run: |
-          keytool -genkey -v \
-            -keystore ${{ github.workspace }}/release.keystore \
-            -alias rustvpn \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.KEYSTORE_PASSWORD }}" \
-            -dname "CN=RustVPN, O=RustVPN, L=Unknown, ST=Unknown, C=US"
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
+          test -s ${{ github.workspace }}/release.keystore || { echo "Keystore decode failed"; exit 1; }
 
       - name: Build Android APK
         env:
