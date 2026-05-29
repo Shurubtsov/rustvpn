@@ -315,34 +315,16 @@ pub fn generate_client_config(
 }
 
 /// Modify xray config JSON for Android:
-/// - Add sockopt mark=255 to proxy outbound (prevents traffic loop through TUN)
 /// - Remove HTTP inbound (unnecessary with TUN)
+///
+/// Note: we deliberately do NOT set sockopt `mark` here. xray runs in our own
+/// (excluded) UID via `addDisallowedApplication`, so its sockets already bypass
+/// the tunnel. Setting SO_MARK requires CAP_NET_ADMIN, which a normal app lacks,
+/// so it only spams "failed to set SO_MARK: operation not permitted" per dial.
 #[cfg(mobile)]
 pub fn modify_config_for_android(config_json: &str) -> Result<String, AppError> {
     let mut config: serde_json::Value =
         serde_json::from_str(config_json).map_err(AppError::from)?;
-
-    // Merge mark=255 into the proxy outbound's sockopt. Merge rather than replace
-    // so the TCP keepalive sockopt set by generate_client_config survives.
-    if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
-        for outbound in outbounds.iter_mut() {
-            if outbound.get("tag").and_then(|t| t.as_str()) == Some("proxy") {
-                let sockopt = outbound
-                    .as_object_mut()
-                    .unwrap()
-                    .entry("streamSettings")
-                    .or_insert(serde_json::json!({}))
-                    .as_object_mut()
-                    .unwrap()
-                    .entry("sockopt")
-                    .or_insert(serde_json::json!({}));
-                sockopt
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("mark".to_string(), serde_json::json!(255));
-            }
-        }
-    }
 
     // Remove HTTP inbound (keep only SOCKS)
     if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {

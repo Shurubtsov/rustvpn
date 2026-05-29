@@ -8,6 +8,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
@@ -443,43 +445,76 @@ class RustVpnService : VpnService() {
         return true
     }
 
-    /// Pin the VPN's underlying transport to the current active network. Without
-    /// this, on some ROMs the excluded app's (xray's) sockets have no usable
-    /// route while the tunnel's 0.0.0.0/0 route is in place, so all proxy dials
-    /// time out and traffic sits at 0 B/s.
+    /// Pick the real physical network (Wi-Fi/cellular) that xray's excluded
+    /// sockets must egress through. MUST exclude VPN-transport networks: once our
+    /// own tunnel is up, cm.activeNetwork resolves to the VPN itself, and binding
+    /// the VPN's underlying network to itself creates a routing loop — the
+    /// excluded app's dials black-hole and traffic sits at 0 B/s (the v0.9.8 bug).
+    private fun pickUnderlyingNetwork(cm: ConnectivityManager): Network? {
+        var fallback: Network? = null
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            // Prefer a validated network; otherwise remember the first candidate.
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return net
+            if (fallback == null) fallback = net
+        }
+        return fallback
+    }
+
+    /// Pin the VPN's underlying transport to the real network. Without this, on
+    /// some ROMs the excluded app's (xray's) sockets have no usable route while
+    /// the tunnel's 0.0.0.0/0 route is in place, so all proxy dials time out and
+    /// traffic sits at 0 B/s.
     private fun bindActiveUnderlyingNetwork() {
         try {
             val cm = getSystemService(ConnectivityManager::class.java) ?: return
-            val active = cm.activeNetwork
-            if (active != null) {
-                setUnderlyingNetworks(arrayOf(active))
-                Log.i(TAG, "Bound VPN underlying network to active network")
+            val net = pickUnderlyingNetwork(cm)
+            if (net != null) {
+                setUnderlyingNetworks(arrayOf(net))
+                Log.i(TAG, "Bound VPN underlying network to physical network $net")
             } else {
-                Log.w(TAG, "No active network to bind underlying network to")
+                Log.w(TAG, "No non-VPN network to bind underlying network to")
             }
         } catch (e: Throwable) {
             Log.w(TAG, "bindActiveUnderlyingNetwork failed", e)
         }
     }
 
-    /// Track the default network so xray's (re)dialed connections follow the live
-    /// network after a Wi-Fi/ISP change instead of sticking to a dead one.
+    /// Track the live physical network so xray's (re)dialed connections follow it
+    /// after a Wi-Fi/ISP change. We request a non-VPN INTERNET network (the
+    /// default-network callback would report our own VPN once it is up, which
+    /// would re-introduce the self-referential underlying-network loop).
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                try { setUnderlyingNetworks(arrayOf(network)) } catch (_: Throwable) {}
+                try {
+                    val caps = cm.getNetworkCapabilities(network)
+                    if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                        setUnderlyingNetworks(arrayOf(network))
+                        Log.i(TAG, "Underlying network changed to $network")
+                    }
+                } catch (_: Throwable) {}
             }
             override fun onLost(network: Network) {
-                try { setUnderlyingNetworks(null) } catch (_: Throwable) {}
+                // Re-pick whatever physical network remains instead of clearing,
+                // which would let the tunnel fall back to its self-reference.
+                try { bindActiveUnderlyingNetwork() } catch (_: Throwable) {}
             }
         }
         try {
-            cm.registerDefaultNetworkCallback(cb)
+            // A NetworkRequest without an explicit VPN transport implicitly
+            // forbids VPN networks, so this only ever fires for real transports.
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(request, cb)
             networkCallback = cb
         } catch (e: Throwable) {
-            Log.w(TAG, "registerDefaultNetworkCallback failed", e)
+            Log.w(TAG, "registerNetworkCallback failed", e)
         }
     }
 
