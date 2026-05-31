@@ -9,6 +9,14 @@ fn default_network() -> String {
     "tcp".to_string()
 }
 
+fn default_security() -> String {
+    "reality".to_string()
+}
+
+fn default_xhttp_mode() -> String {
+    "auto".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "generate_id")]
@@ -26,6 +34,17 @@ pub struct ServerConfig {
     /// XHTTP request path; only meaningful when `network == "xhttp"`. Empty → "/".
     #[serde(default)]
     pub xhttp_path: String,
+    /// Transport security: "reality" (default) or "tls". TLS is required for CDN
+    /// fronting (Cloudflare terminates TLS, so REALITY can't be used through a
+    /// CDN). When "tls", `reality.server_name` is the TLS SNI / HTTP Host (the
+    /// CDN domain) and `reality.fingerprint` is the uTLS fingerprint;
+    /// `public_key`/`short_id` are unused.
+    #[serde(default = "default_security")]
+    pub security: String,
+    /// XHTTP mode: "auto" (default), "stream-one", "stream-up", "packet-up".
+    /// CDN (TLS) profiles default to "stream-one"; only meaningful for xhttp.
+    #[serde(default = "default_xhttp_mode")]
+    pub xhttp_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,12 +103,20 @@ impl ServerConfig {
             );
         }
 
-        if self.reality.public_key.trim().is_empty() {
-            return Err("Reality public_key must not be empty".to_string());
-        }
+        if self.security == "tls" {
+            // CDN/TLS mode: server_name is the SNI/Host (CDN domain) and is
+            // required; the REALITY keypair is unused, so it is not validated.
+            if self.reality.server_name.trim().is_empty() {
+                return Err("TLS server name (CDN domain) must not be empty".to_string());
+            }
+        } else {
+            if self.reality.public_key.trim().is_empty() {
+                return Err("Reality public_key must not be empty".to_string());
+            }
 
-        if self.reality.short_id.trim().is_empty() {
-            return Err("Reality short_id must not be empty".to_string());
+            if self.reality.short_id.trim().is_empty() {
+                return Err("Reality short_id must not be empty".to_string());
+            }
         }
 
         if self.network != "tcp" && self.network != "xhttp" {
@@ -143,6 +170,8 @@ impl Default for ServerConfig {
             reality: RealitySettings::default(),
             network: default_network(),
             xhttp_path: String::new(),
+            security: default_security(),
+            xhttp_mode: default_xhttp_mode(),
         }
     }
 }
@@ -247,6 +276,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         }
     }
 

@@ -23,6 +23,8 @@
 	let flow = $state(untrack(() => server?.flow ?? 'xtls-rprx-vision'));
 	let network = $state(untrack(() => server?.network ?? 'tcp'));
 	let xhttpPath = $state(untrack(() => server?.xhttp_path ?? ''));
+	let security = $state(untrack(() => server?.security ?? 'reality'));
+	let xhttpMode = $state(untrack(() => server?.xhttp_mode ?? 'auto'));
 	let publicKey = $state(untrack(() => server?.reality.public_key ?? ''));
 	let shortId = $state(untrack(() => server?.reality.short_id ?? ''));
 	let serverName = $state(untrack(() => server?.reality.server_name ?? 'www.microsoft.com'));
@@ -32,14 +34,30 @@
 
 	const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+	// TLS/CDN only makes sense over xHTTP (Cloudflare terminates TLS, so REALITY
+	// is impossible). Selecting TLS forces xHTTP and defaults the mode to
+	// stream-one — the recommended profile behind Cloudflare.
+	function selectSecurity(s: string) {
+		security = s;
+		if (s === 'tls') {
+			network = 'xhttp';
+			if (!xhttpMode || xhttpMode === 'auto') xhttpMode = 'stream-one';
+		}
+	}
+
 	function validate(): boolean {
 		const e: Record<string, string> = {};
+		const isTls = security === 'tls';
 		if (!address.trim()) e.address = 'Address is required';
 		if (!UUID_RE.test(uuid.trim())) e.uuid = 'Invalid UUID format';
 		if (port < 1 || port > 65535) e.port = 'Port must be between 1 and 65535';
-		if (!publicKey.trim()) e.publicKey = 'Public key is required';
-		if (!shortId.trim()) e.shortId = 'Short ID is required';
-		if (!serverName.trim()) e.serverName = 'Server name is required';
+		// The REALITY keypair is only used (and required) for REALITY security.
+		if (!isTls) {
+			if (!publicKey.trim()) e.publicKey = 'Public key is required';
+			if (!shortId.trim()) e.shortId = 'Short ID is required';
+		}
+		if (!serverName.trim())
+			e.serverName = isTls ? 'CDN domain is required' : 'Server name is required';
 		if (!fingerprint.trim()) e.fingerprint = 'Fingerprint is required';
 		errors = e;
 		return Object.keys(e).length === 0;
@@ -48,7 +66,9 @@
 	function handleSubmit(e: Event) {
 		e.preventDefault();
 		if (!validate()) return;
-		const isXhttp = network === 'xhttp';
+		const isTls = security === 'tls';
+		// TLS implies xHTTP; otherwise honour the transport toggle.
+		const isXhttp = isTls || network === 'xhttp';
 		onSave({
 			id: server?.id ?? '',
 			name: name.trim() || address.trim(),
@@ -58,13 +78,16 @@
 			// XTLS-Vision flow only works over raw TCP; xHTTP must use an empty flow.
 			flow: isXhttp ? '' : flow.trim(),
 			reality: {
-				public_key: publicKey.trim(),
-				short_id: shortId.trim(),
+				// Keypair is unused for TLS/CDN — store empty so the config stays clean.
+				public_key: isTls ? '' : publicKey.trim(),
+				short_id: isTls ? '' : shortId.trim(),
 				server_name: serverName.trim(),
 				fingerprint: fingerprint.trim()
 			},
-			network,
-			xhttp_path: isXhttp ? xhttpPath.trim() : ''
+			network: isXhttp ? 'xhttp' : 'tcp',
+			xhttp_path: isXhttp ? xhttpPath.trim() : '',
+			security,
+			xhttp_mode: isXhttp ? xhttpMode.trim() || 'auto' : 'auto'
 		});
 	}
 
@@ -176,6 +199,17 @@
 				</div>
 			</div>
 
+			<!-- Security -->
+			<div class="flex flex-col gap-1">
+				<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Security</span>
+				<div class="flex gap-2">
+					<button type="button" onclick={() => selectSecurity('reality')} class={cn('flex-1 py-2 rounded-lg border text-sm font-medium transition-colors', security === 'reality' ? 'border-zinc-500 bg-zinc-800/60 text-foreground' : 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600')} aria-pressed={security === 'reality'}>REALITY</button>
+					<button type="button" onclick={() => selectSecurity('tls')} class={cn('flex-1 py-2 rounded-lg border text-sm font-medium transition-colors', security === 'tls' ? 'border-zinc-500 bg-zinc-800/60 text-foreground' : 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600')} aria-pressed={security === 'tls'}>TLS (CDN)</button>
+				</div>
+				<p class="text-[10px] text-muted-foreground/60">TLS (CDN) tunnels via xHTTP through a CDN like Cloudflare — hides the server IP to beat DPI IP-throttling. Use REALITY for a direct connection.</p>
+			</div>
+
+			{#if security === 'reality'}
 			<!-- Transport -->
 			<div class="flex flex-col gap-1">
 				<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Transport</span>
@@ -211,8 +245,9 @@
 					xHTTP disguises the tunnel as plain HTTP — more resistant to mobile DPI throttling.
 				</p>
 			</div>
+			{/if}
 
-			{#if network === 'tcp'}
+			{#if security !== 'tls' && network === 'tcp'}
 				<!-- Flow (raw TCP only) -->
 				<div class="flex flex-col gap-1">
 					<label for="sf-flow" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Flow</label>
@@ -236,11 +271,23 @@
 						class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 				</div>
+				<!-- XHTTP mode -->
+				<div class="flex flex-col gap-1">
+					<label for="sf-xhttp-mode" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">XHTTP Mode</label>
+					<select id="sf-xhttp-mode" bind:value={xhttpMode} class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-ring">
+						<option value="auto">auto</option>
+						<option value="stream-one">stream-one (best for CDN)</option>
+						<option value="stream-up">stream-up</option>
+						<option value="packet-up">packet-up (most DPI-resistant)</option>
+					</select>
+				</div>
 			{/if}
 
-			<!-- REALITY section -->
+			<!-- Security details section -->
 			<div class="border border-border rounded-lg p-3 flex flex-col gap-3">
-				<p class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">REALITY Settings</p>
+				<p class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{security === 'tls' ? 'TLS Settings' : 'REALITY Settings'}</p>
+
+				{#if security !== 'tls'}
 
 				<!-- Public key -->
 				<div class="flex flex-col gap-1">
@@ -273,16 +320,17 @@
 					/>
 					{#if errors.shortId}<p class="text-xs text-destructive">{errors.shortId}</p>{/if}
 				</div>
+				{/if}
 
 				<!-- Server name (SNI) + Fingerprint row -->
 				<div class="flex gap-3">
 					<div class="flex flex-col gap-1 flex-1">
-						<label for="sf-sni" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">SNI *</label>
+						<label for="sf-sni" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">{security === 'tls' ? 'CDN domain *' : 'SNI *'}</label>
 						<input
 							id="sf-sni"
 							type="text"
 							bind:value={serverName}
-							placeholder="www.microsoft.com"
+							placeholder={security === 'tls' ? 'cdn.example.com' : 'www.microsoft.com'}
 							class={cn(
 								'w-full bg-background border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring',
 								errors.serverName ? 'border-destructive' : 'border-border'
