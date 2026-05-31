@@ -910,13 +910,18 @@ mod tests {
         // use security "tls" (NOT reality, which can't survive a CDN), carry
         // tlsSettings with serverName=CDN domain + alpn h2, set the xhttp Host
         // header to the same domain, and pass the chosen mode through.
-        let mut server = ServerConfig::default();
-        server.network = "xhttp".to_string();
-        server.security = "tls".to_string();
-        server.xhttp_path = "/assets".to_string();
-        server.xhttp_mode = "stream-one".to_string();
-        server.reality.server_name = "cdn.example.com".to_string();
-        server.reality.fingerprint = "chrome".to_string();
+        let server = ServerConfig {
+            network: "xhttp".to_string(),
+            security: "tls".to_string(),
+            xhttp_path: "/assets".to_string(),
+            xhttp_mode: "stream-one".to_string(),
+            reality: RealitySettings {
+                server_name: "cdn.example.com".to_string(),
+                fingerprint: "chrome".to_string(),
+                ..RealitySettings::default()
+            },
+            ..ServerConfig::default()
+        };
         let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
         let parsed: Value = serde_json::from_str(&config).unwrap();
         let stream = &parsed["outbounds"][0]["streamSettings"];
@@ -943,9 +948,11 @@ mod tests {
     fn test_config_xhttp_mode_passthrough() {
         // A non-default xhttp mode on a REALITY xhttp server must reach the
         // generated config (so e.g. packet-up can be selected without TLS).
-        let mut server = ServerConfig::default();
-        server.network = "xhttp".to_string();
-        server.xhttp_mode = "packet-up".to_string();
+        let server = ServerConfig {
+            network: "xhttp".to_string(),
+            xhttp_mode: "packet-up".to_string(),
+            ..ServerConfig::default()
+        };
         let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
         let parsed: Value = serde_json::from_str(&config).unwrap();
         let xhttp = &parsed["outbounds"][0]["streamSettings"]["xhttpSettings"];
