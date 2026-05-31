@@ -37,6 +37,40 @@ function createServersStore() {
 		}
 	}
 
+	/**
+	 * Load the server list, tolerating a cold/not-yet-ready Tauri backend.
+	 *
+	 * This is the real fix for the Android "server list is empty on reopen"
+	 * bug. ColorOS (and Android generally under memory pressure) destroys the
+	 * Activity while backgrounded and reloads the WebView on resume. When the
+	 * page re-runs onMount it fires `get_servers` immediately — but the IPC
+	 * bridge / Rust backend may not be ready yet, so that first call either
+	 * *rejects* or resolves with `[]`. A single attempt then leaves the list
+	 * empty until something forces a fresh mount (navigating to /logs and back),
+	 * which is exactly the symptom observed.
+	 *
+	 * So we retry on BOTH failure modes — a thrown/rejected invoke AND a
+	 * successful-but-empty result — with a short backoff, stopping as soon as we
+	 * have servers. A genuinely empty install (first run) simply exhausts the
+	 * attempts quickly and shows the empty/add-server UI, which is fine.
+	 */
+	async function loadWithRetry(attempts = 8, delayMs = 250): Promise<void> {
+		for (let i = 0; i < attempts; i++) {
+			try {
+				await load();
+				// Got real data — done. (If we already hold servers from a warm
+				// store, servers.length stays > 0 and we stop immediately.)
+				if (servers.length > 0) return;
+			} catch {
+				// Backend not ready yet — fall through to the backoff and retry.
+			}
+			// Last attempt: don't sleep needlessly.
+			if (i < attempts - 1) {
+				await new Promise((r) => setTimeout(r, delayMs));
+			}
+		}
+	}
+
 	async function addServer(server: ServerConfig): Promise<ServerConfig> {
 		const created = await api.addServer(server);
 		await load();
@@ -109,6 +143,7 @@ function createServersStore() {
 			return loadError;
 		},
 		load,
+		loadWithRetry,
 		addServer,
 		updateServer,
 		deleteServer,

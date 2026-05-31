@@ -238,16 +238,21 @@
 	// Force the Android WebView to actually repaint. On resume the DOM is
 	// up to date but the GPU compositor often keeps the previous (or blank)
 	// surface until a touch invalidates it — which is exactly why the server
-	// list only reappears after the user taps something. Nudging opacity makes
-	// the compositor redraw, without touching layout or fixed-position modals.
+	// list only reappears after the user taps something.
+	//
+	// Earlier attempts (opacity nudge, scrollBy) were no-ops here: Chromium
+	// collapses opacity:0.9999 back to 1, and scrollBy does nothing on a page
+	// that fits the viewport without scrolling. A synchronous display toggle
+	// can't be optimized away — it forces a full reflow + repaint of the whole
+	// tree (server rows included), which is the same thing a route navigation
+	// does (the only thing that reliably fixed it manually).
 	function forceRepaint() {
 		const el = document.body;
 		if (!el) return;
-		el.style.opacity = '0.9999';
-		void el.offsetHeight; // flush reflow so the toggle actually takes
-		requestAnimationFrame(() => {
-			el.style.opacity = '';
-		});
+		const prev = el.style.display;
+		el.style.display = 'none';
+		void el.offsetHeight; // flush: detach from the layout/composite tree
+		el.style.display = prev; // re-attach → guaranteed fresh layout + paint
 	}
 
 	// When the app returns to the foreground (notably on Android, where the
@@ -257,11 +262,19 @@
 	// that here), force a repaint, and resync connection state.
 	function handleVisibilityChange() {
 		if (document.visibilityState !== 'visible') return;
+		// The list goes empty on Android reopen because ColorOS destroyed the
+		// Activity and reloaded the WebView while backgrounded, and the first
+		// get_servers IPC after resume can come back rejected or empty before the
+		// backend is ready. Retry until we actually have data, then remount the
+		// list so the fresh array is rendered. forceRepaint covers the (rarer)
+		// case where the DOM is correct but the compositor surface is stale.
 		serverListKey++;
 		servers
-			.load()
+			.loadWithRetry()
 			.then(() => {
 				serverListKey++;
+				forceRepaint();
+				requestAnimationFrame(forceRepaint);
 			})
 			.catch((e) => showToast(`Failed to reload servers: ${e}`, 'error'));
 		store.refresh();
@@ -270,8 +283,13 @@
 	}
 
 	onMount(async () => {
+		// loadWithRetry, not load(): on a cold WebView reload after an Android
+		// resume the Tauri backend may not be ready for the first get_servers
+		// call (it rejects or returns []). A plain single load() is what left the
+		// server list empty until a route remount. Retrying until data arrives is
+		// the actual fix for the vanishing list.
 		try {
-			await servers.load();
+			await servers.loadWithRetry();
 		} catch (e) {
 			showToast(`Failed to load servers: ${e}`, 'error');
 		}

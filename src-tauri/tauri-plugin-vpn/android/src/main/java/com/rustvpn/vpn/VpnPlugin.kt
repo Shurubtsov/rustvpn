@@ -64,7 +64,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     override fun onResume() {
         super.onResume()
         val wv = webView
-        Log.i(TAG, "Activity onResume — nudging WebView repaint (webView=${wv != null})")
+        Log.i(TAG, "Activity onResume — forcing WebView repaint (webView=${wv != null})")
         if (wv == null) return
         wv.post {
             try {
@@ -76,26 +76,21 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
                     "window.dispatchEvent(new Event('tauri-resume'))",
                     null
                 )
-                // Force the compositor to emit a fresh frame. invalidate() alone
-                // often just re-blits the stale surface; a 1px scroll-and-back is
-                // a compositor op (what a touch effectively does) that reliably
-                // wakes the renderer so the page actually paints.
-                wv.scrollBy(0, 1)
-                wv.scrollBy(0, -1)
-                wv.invalidate()
+                // Force a fresh frame. scrollBy() is a no-op when the page fits
+                // the viewport (our case), and invalidate() alone often just
+                // re-blits the stale surface. Toggling view visibility makes the
+                // view system tear down and re-pull the content layer — the same
+                // full re-composite a touch triggers — which actually clears the
+                // blank/stale server-list surface.
+                wv.visibility = android.view.View.INVISIBLE
+                wv.post {
+                    wv.visibility = android.view.View.VISIBLE
+                    wv.invalidate()
+                }
             } catch (e: Throwable) {
                 Log.w(TAG, "onResume repaint failed", e)
             }
         }
-        // A beat later, once layout/JS have settled, nudge once more — some
-        // devices need the second frame to clear the stale surface.
-        wv.postDelayed({
-            try {
-                wv.scrollBy(0, 1)
-                wv.scrollBy(0, -1)
-                wv.invalidate()
-            } catch (_: Throwable) {}
-        }, 250)
     }
 
     private val bindLock = Object()
