@@ -7,6 +7,9 @@ name: Debug APK
 # Release). Diagnostic builds only — run from the diag branch.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'diag/**'
 
 jobs:
   build-android-debug:
