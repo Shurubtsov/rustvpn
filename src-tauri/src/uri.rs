@@ -79,9 +79,10 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
                 "pbk" => public_key = url_decode(value),
                 "sid" => short_id = url_decode(value),
                 "type" => {
-                    // xray/v2ray spell the XHTTP transport variously; normalize them all.
+                    // xray/v2ray spell the transports variously; normalize them all.
                     network = match url_decode(value).as_str() {
                         "xhttp" | "http" | "splithttp" => "xhttp".to_string(),
+                        "ws" | "websocket" => "ws".to_string(),
                         _ => "tcp".to_string(),
                     };
                 }
@@ -102,10 +103,16 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
         }
     }
 
-    // XTLS-Vision flow is only valid over raw TCP; drop it for XHTTP so the stored
-    // entry stays internally consistent.
-    if network == "xhttp" {
+    // XTLS-Vision flow is only valid over raw TCP; drop it for XHTTP and WS so the
+    // stored entry stays internally consistent.
+    if network == "xhttp" || network == "ws" {
         flow = String::new();
+    }
+
+    // WebSocket is only used for CDN fronting, which always uses real TLS — a
+    // share link may omit security=tls, so force it.
+    if network == "ws" {
+        security = "tls".to_string();
     }
 
     // For TLS/CDN, sni and host are both the CDN domain; store it as server_name.
@@ -142,6 +149,26 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
 
 pub fn to_vless_uri(server: &ServerConfig) -> String {
     let name = url_encode(&server.name);
+    if server.network == "ws" {
+        // VLESS + WebSocket + TLS for CDN fronting. No REALITY keypair; sni and
+        // the HTTP Host header are both the CDN domain (server_name).
+        let path = if server.xhttp_path.trim().is_empty() {
+            "/"
+        } else {
+            server.xhttp_path.trim()
+        };
+        return format!(
+            "vless://{}@{}:{}?encryption=none&type=ws&security=tls&host={}&path={}&sni={}&fp={}#{}",
+            server.uuid,
+            server.address,
+            server.port,
+            url_encode(&server.reality.server_name),
+            url_encode(path),
+            url_encode(&server.reality.server_name),
+            url_encode(&server.reality.fingerprint),
+            name,
+        );
+    }
     if server.network == "xhttp" {
         let path = if server.xhttp_path.trim().is_empty() {
             "/"
@@ -546,6 +573,52 @@ mod tests {
         assert_eq!(parsed.network, "xhttp");
         assert_eq!(parsed.xhttp_path, "/xhttp");
         assert_eq!(parsed.reality.short_id, "713a3828823be899");
+    }
+
+    #[test]
+    fn parse_ws_uri() {
+        let uri = "vless://d6c5bf01-c90d-4094-bb27-cb8f966af8e4@rustvpn.fun:443?encryption=none&type=ws&security=tls&host=rustvpn.fun&path=%2Fws&sni=rustvpn.fun&fp=chrome#CF%20WS";
+        let config = parse_vless_uri(uri).unwrap();
+        assert_eq!(config.network, "ws");
+        assert_eq!(config.security, "tls");
+        assert_eq!(config.xhttp_path, "/ws");
+        assert_eq!(config.reality.server_name, "rustvpn.fun");
+        assert_eq!(config.reality.fingerprint, "chrome");
+        assert_eq!(config.flow, "");
+        assert_eq!(config.name, "CF WS");
+    }
+
+    #[test]
+    fn roundtrip_ws() {
+        let server = ServerConfig {
+            id: "w".to_string(),
+            name: "CF WS".to_string(),
+            address: "rustvpn.fun".to_string(),
+            port: 443,
+            uuid: "d6c5bf01-c90d-4094-bb27-cb8f966af8e4".to_string(),
+            flow: String::new(),
+            reality: RealitySettings {
+                public_key: String::new(),
+                short_id: String::new(),
+                server_name: "rustvpn.fun".to_string(),
+                fingerprint: "chrome".to_string(),
+            },
+            network: "ws".to_string(),
+            xhttp_path: "/ws".to_string(),
+            security: "tls".to_string(),
+            xhttp_mode: "auto".to_string(),
+        };
+        let uri = to_vless_uri(&server);
+        assert!(uri.contains("type=ws"));
+        assert!(uri.contains("security=tls"));
+        assert!(uri.contains("path=%2Fws"));
+        assert!(!uri.contains("pbk="));
+        assert!(!uri.contains("flow="));
+        let parsed = parse_vless_uri(&uri).unwrap();
+        assert_eq!(parsed.network, "ws");
+        assert_eq!(parsed.security, "tls");
+        assert_eq!(parsed.xhttp_path, "/ws");
+        assert_eq!(parsed.reality.server_name, "rustvpn.fun");
     }
 
     #[test]

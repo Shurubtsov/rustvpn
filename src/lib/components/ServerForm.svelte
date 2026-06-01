@@ -34,15 +34,25 @@
 
 	const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-	// TLS/CDN only makes sense over xHTTP (Cloudflare terminates TLS, so REALITY
-	// is impossible). Selecting TLS forces xHTTP and defaults the mode to
-	// stream-one — the recommended profile behind Cloudflare.
+	// TLS/CDN (Cloudflare terminates TLS, so REALITY is impossible here). The
+	// reliable CDN transport is WebSocket — CF natively proxies it. xHTTP is
+	// offered too but is unreliable through Cloudflare, so TLS defaults to ws.
 	function selectSecurity(s: string) {
 		security = s;
 		if (s === 'tls') {
+			if (network === 'tcp') network = 'ws';
+			if (!xhttpPath.trim()) xhttpPath = network === 'ws' ? '/ws' : '/assets';
+		} else if (network === 'ws') {
+			// REALITY can't ride WebSocket in this app; fall back to xHTTP.
 			network = 'xhttp';
-			if (!xhttpMode || xhttpMode === 'auto') xhttpMode = 'stream-one';
 		}
+	}
+
+	// Transport toggle within TLS/CDN mode.
+	function selectCdnTransport(n: string) {
+		network = n;
+		if (!xhttpPath.trim()) xhttpPath = n === 'ws' ? '/ws' : '/assets';
+		if (n === 'xhttp' && (!xhttpMode || xhttpMode === 'auto')) xhttpMode = 'packet-up';
 	}
 
 	function validate(): boolean {
@@ -67,16 +77,16 @@
 		e.preventDefault();
 		if (!validate()) return;
 		const isTls = security === 'tls';
-		// TLS implies xHTTP; otherwise honour the transport toggle.
-		const isXhttp = isTls || network === 'xhttp';
+		// network is one of tcp / xhttp / ws (from the toggles). ws & xhttp use a
+		// path and an empty flow; only raw tcp carries XTLS-Vision flow.
+		const usesPath = network === 'ws' || network === 'xhttp';
 		onSave({
 			id: server?.id ?? '',
 			name: name.trim() || address.trim(),
 			address: address.trim(),
 			port,
 			uuid: uuid.trim(),
-			// XTLS-Vision flow only works over raw TCP; xHTTP must use an empty flow.
-			flow: isXhttp ? '' : flow.trim(),
+			flow: usesPath ? '' : flow.trim(),
 			reality: {
 				// Keypair is unused for TLS/CDN — store empty so the config stays clean.
 				public_key: isTls ? '' : publicKey.trim(),
@@ -84,10 +94,11 @@
 				server_name: serverName.trim(),
 				fingerprint: fingerprint.trim()
 			},
-			network: isXhttp ? 'xhttp' : 'tcp',
-			xhttp_path: isXhttp ? xhttpPath.trim() : '',
+			network,
+			xhttp_path: usesPath ? xhttpPath.trim() : '',
 			security,
-			xhttp_mode: isXhttp ? xhttpMode.trim() || 'auto' : 'auto'
+			// Mode only applies to xHTTP; ws/tcp leave it at the default.
+			xhttp_mode: network === 'xhttp' ? xhttpMode.trim() || 'auto' : 'auto'
 		});
 	}
 
@@ -247,7 +258,35 @@
 			</div>
 			{/if}
 
-			{#if security !== 'tls' && network === 'tcp'}
+			{#if security === 'tls'}
+			<!-- CDN transport: WebSocket (reliable through Cloudflare) vs xHTTP -->
+			<div class="flex flex-col gap-1">
+				<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">CDN Transport</span>
+				<div class="flex gap-2">
+					<button
+						type="button"
+						onclick={() => selectCdnTransport('ws')}
+						class={cn('flex-1 py-2 rounded-lg border text-sm font-medium transition-colors', network === 'ws' ? 'border-zinc-500 bg-zinc-800/60 text-foreground' : 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600')}
+						aria-pressed={network === 'ws'}
+					>
+						WebSocket
+					</button>
+					<button
+						type="button"
+						onclick={() => selectCdnTransport('xhttp')}
+						class={cn('flex-1 py-2 rounded-lg border text-sm font-medium transition-colors', network === 'xhttp' ? 'border-zinc-500 bg-zinc-800/60 text-foreground' : 'border-border text-muted-foreground hover:text-foreground hover:border-zinc-600')}
+						aria-pressed={network === 'xhttp'}
+					>
+						xHTTP
+					</button>
+				</div>
+				<p class="text-[10px] text-muted-foreground/60">
+					WebSocket is the reliable choice through Cloudflare. xHTTP is often dropped by Cloudflare — only use it if your CDN supports it.
+				</p>
+			</div>
+			{/if}
+
+			{#if network === 'tcp'}
 				<!-- Flow (raw TCP only) -->
 				<div class="flex flex-col gap-1">
 					<label for="sf-flow" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Flow</label>
@@ -262,15 +301,16 @@
 			{:else}
 				<!-- XHTTP path -->
 				<div class="flex flex-col gap-1">
-					<label for="sf-xhttp-path" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">XHTTP Path</label>
+					<label for="sf-xhttp-path" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">{network === 'ws' ? 'WebSocket Path' : 'XHTTP Path'}</label>
 					<input
 						id="sf-xhttp-path"
 						type="text"
 						bind:value={xhttpPath}
-						placeholder="/xhttp"
+						placeholder={network === 'ws' ? '/ws' : '/xhttp'}
 						class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 				</div>
+				{#if network === 'xhttp'}
 				<!-- XHTTP mode -->
 				<div class="flex flex-col gap-1">
 					<label for="sf-xhttp-mode" class="text-xs font-medium text-muted-foreground uppercase tracking-wide">XHTTP Mode</label>
@@ -281,6 +321,7 @@
 						<option value="packet-up">packet-up (most DPI-resistant)</option>
 					</select>
 				</div>
+				{/if}
 			{/if}
 
 			<!-- Security details section -->

@@ -119,11 +119,17 @@ impl ServerConfig {
             }
         }
 
-        if self.network != "tcp" && self.network != "xhttp" {
+        if self.network != "tcp" && self.network != "xhttp" && self.network != "ws" {
             return Err(format!(
-                "Unsupported transport '{}' (expected 'tcp' or 'xhttp')",
+                "Unsupported transport '{}' (expected 'tcp', 'xhttp', or 'ws')",
                 self.network
             ));
+        }
+
+        // WebSocket is only used for CDN fronting, which requires real TLS
+        // (Cloudflare terminates TLS and natively proxies WebSocket).
+        if self.network == "ws" && self.security != "tls" {
+            return Err("WebSocket transport requires TLS security (CDN fronting)".to_string());
         }
 
         Ok(())

@@ -62,6 +62,7 @@ pub fn generate_client_config(
     });
 
     let is_xhttp = server.network == "xhttp";
+    let is_ws = server.network == "ws";
     let is_tls = server.security == "tls";
 
     // TCP keepalive so xray detects a server connection that has silently gone
@@ -75,7 +76,37 @@ pub fn generate_client_config(
     // XHTTP disguises the tunnel as ordinary HTTP, which survives the TCP
     // session-freezing that DPI applies to raw-TCP REALITY. XTLS-Vision flow
     // only works over raw TCP, so XHTTP must connect with an empty flow.
-    let (stream_settings, user_flow): (Value, &str) = if is_xhttp {
+    let (stream_settings, user_flow): (Value, &str) = if is_ws {
+        // VLESS + WebSocket + real TLS — the reliable Cloudflare CDN transport.
+        // CF natively proxies WebSocket (persistent, bidirectional, unbuffered),
+        // unlike xHTTP whose request storm CF tears down. serverName/Host is the
+        // CDN domain (stored in reality.server_name); alpn http/1.1 because the
+        // WebSocket upgrade is an HTTP/1.1 mechanism.
+        let path = if server.xhttp_path.trim().is_empty() {
+            "/"
+        } else {
+            server.xhttp_path.trim()
+        };
+        let cdn_host = server.reality.server_name.as_str();
+        let tls_settings = json!({
+            "serverName": cdn_host,
+            "alpn": ["http/1.1"],
+            "fingerprint": server.reality.fingerprint
+        });
+        (
+            json!({
+                "network": "ws",
+                "security": "tls",
+                "tlsSettings": tls_settings,
+                "wsSettings": {
+                    "path": path,
+                    "headers": { "Host": cdn_host }
+                },
+                "sockopt": sockopt
+            }),
+            "",
+        )
+    } else if is_xhttp {
         let path = if server.xhttp_path.trim().is_empty() {
             "/"
         } else {
@@ -959,6 +990,39 @@ mod tests {
         assert_eq!(xhttp["mode"], "stream-one");
         assert_eq!(xhttp["host"], "cdn.example.com");
         // Flow stays empty for xhttp.
+        assert_eq!(
+            parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
+            ""
+        );
+    }
+
+    #[test]
+    fn test_config_ws_tls_cdn() {
+        // VLESS + WebSocket + real TLS for Cloudflare CDN: stream must use ws +
+        // security tls, carry tlsSettings (serverName = CDN domain, alpn
+        // http/1.1 for the WS upgrade) and wsSettings (path + Host header).
+        let server = ServerConfig {
+            address: "rustvpn.fun".to_string(),
+            network: "ws".to_string(),
+            security: "tls".to_string(),
+            xhttp_path: "/ws".to_string(),
+            reality: RealitySettings {
+                server_name: "rustvpn.fun".to_string(),
+                fingerprint: "chrome".to_string(),
+                ..RealitySettings::default()
+            },
+            ..ServerConfig::default()
+        };
+        let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&config).unwrap();
+        let stream = &parsed["outbounds"][0]["streamSettings"];
+        assert_eq!(stream["network"], "ws");
+        assert_eq!(stream["security"], "tls");
+        assert!(stream.get("realitySettings").is_none());
+        assert_eq!(stream["tlsSettings"]["serverName"], "rustvpn.fun");
+        assert_eq!(stream["tlsSettings"]["alpn"][0], "http/1.1");
+        assert_eq!(stream["wsSettings"]["path"], "/ws");
+        assert_eq!(stream["wsSettings"]["headers"]["Host"], "rustvpn.fun");
         assert_eq!(
             parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
             ""

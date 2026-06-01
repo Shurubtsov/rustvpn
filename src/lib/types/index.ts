@@ -13,9 +13,12 @@ export interface ServerConfig {
 	uuid: string;
 	flow: string;
 	reality: RealitySettings;
-	/** Transport: "tcp" (REALITY + XTLS-Vision) or "xhttp" (REALITY over XHTTP, DPI-resistant). */
+	/**
+	 * Transport: "tcp" (REALITY + XTLS-Vision), "xhttp" (DPI-resistant HTTP), or
+	 * "ws" (WebSocket — the reliable transport for CDN/Cloudflare fronting).
+	 */
 	network: string;
-	/** XHTTP request path; only used when network === "xhttp". */
+	/** Transport request path; used when network is "xhttp" or "ws". */
 	xhttp_path: string;
 	/**
 	 * Transport security: "reality" (default) or "tls". TLS is required for CDN
