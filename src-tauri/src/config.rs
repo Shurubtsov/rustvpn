@@ -167,6 +167,18 @@ pub fn generate_client_config(
         )
     };
 
+    // Multiplex many logical streams over a few transport connections. This is
+    // essential for ws-over-CDN: without it xray opens a fresh WebSocket + TLS
+    // handshake to Cloudflare for every connection, so a page that needs dozens
+    // of connections crawls and the connection churn makes it unstable. Mux is
+    // left OFF for REALITY/xHTTP, which don't have that per-connection handshake
+    // cost (and where Vision/xhttp do their own multiplexing).
+    let mux_setting = if is_ws {
+        json!({ "enabled": true, "concurrency": 8 })
+    } else {
+        json!({ "enabled": false })
+    };
+
     let mut config: Value = json!({
         "log": {
             "loglevel": "info"
@@ -230,7 +242,8 @@ pub fn generate_client_config(
                         }
                     ]
                 },
-                "streamSettings": stream_settings
+                "streamSettings": stream_settings,
+                "mux": mux_setting
             },
             {
                 "tag": "direct",
@@ -1023,6 +1036,9 @@ mod tests {
         assert_eq!(stream["tlsSettings"]["alpn"][0], "http/1.1");
         assert_eq!(stream["wsSettings"]["path"], "/ws");
         assert_eq!(stream["wsSettings"]["headers"]["Host"], "rustvpn.fun");
+        // Mux is enabled for ws-over-CDN to avoid a TLS+WS handshake per connection.
+        assert_eq!(parsed["outbounds"][0]["mux"]["enabled"], true);
+        assert_eq!(parsed["outbounds"][0]["mux"]["concurrency"], 8);
         assert_eq!(
             parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
             ""
