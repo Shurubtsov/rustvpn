@@ -317,15 +317,27 @@ pub fn generate_client_config(
         "ff00::/8".to_string(), // IPv6 multicast
     ];
 
-    // Defense-in-depth: route VPN server IP directly (alongside helper's ip route add)
+    // Defense-in-depth: route the VPN server directly (alongside helper's ip route add)
+    // so a connection to the server endpoint can never loop back into the proxy.
+    // The address may be a literal IP (REALITY servers) or a domain (CDN fronting,
+    // e.g. rustvpn.fun) — a domain must go in a `domain` rule, NOT an `ip` rule, or
+    // xray rejects the config with "illegal ip rule: <domain>/32".
+    let mut direct_domains: Vec<String> = Vec::new();
     if !server.address.is_empty() {
-        let server_cidr = if server.address.contains('/') {
-            server.address.clone()
+        if server.address.contains('/') {
+            // Already a CIDR.
+            if !direct_ips.contains(&server.address) {
+                direct_ips.push(server.address.clone());
+            }
+        } else if let Ok(ip) = server.address.parse::<std::net::IpAddr>() {
+            let prefix = if ip.is_ipv6() { 128 } else { 32 };
+            let server_cidr = format!("{}/{}", server.address, prefix);
+            if !direct_ips.contains(&server_cidr) {
+                direct_ips.push(server_cidr);
+            }
         } else {
-            format!("{}/32", server.address)
-        };
-        if !direct_ips.contains(&server_cidr) {
-            direct_ips.push(server_cidr);
+            // Domain (CDN fronting): route by domain, not IP.
+            direct_domains.push(server.address.clone());
         }
     }
     // In proxy-only mode (no sendThrough), add bypass subnets to the normal direct rule.
@@ -344,6 +356,15 @@ pub fn generate_client_config(
         "outboundTag": "direct",
         "ip": ip_values
     }));
+
+    // Route the server domain (CDN fronting) directly so it never loops into the proxy.
+    if !direct_domains.is_empty() {
+        rules.push(json!({
+            "type": "field",
+            "outboundTag": "direct",
+            "domain": direct_domains
+        }));
+    }
 
     serde_json::to_string_pretty(&config).map_err(AppError::from)
 }
@@ -941,6 +962,51 @@ mod tests {
         assert_eq!(
             parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
             ""
+        );
+    }
+
+    #[test]
+    fn test_config_domain_server_address_uses_domain_rule() {
+        // CDN fronting uses a domain (e.g. rustvpn.fun) as the server address. It
+        // must land in a `domain` direct rule, never an `ip` rule as "<domain>/32"
+        // — xray rejects the latter with "illegal ip rule" and refuses to start.
+        let server = ServerConfig {
+            address: "rustvpn.fun".to_string(),
+            network: "xhttp".to_string(),
+            security: "tls".to_string(),
+            xhttp_path: "/assets".to_string(),
+            xhttp_mode: "stream-one".to_string(),
+            reality: RealitySettings {
+                server_name: "rustvpn.fun".to_string(),
+                fingerprint: "chrome".to_string(),
+                ..RealitySettings::default()
+            },
+            ..ServerConfig::default()
+        };
+        let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&config).unwrap();
+        let rules = parsed["routing"]["rules"].as_array().unwrap();
+
+        // No ip rule may contain the illegal "rustvpn.fun/32".
+        for rule in rules {
+            if let Some(ips) = rule.get("ip").and_then(|v| v.as_array()) {
+                assert!(
+                    !ips.iter().any(|v| v.as_str() == Some("rustvpn.fun/32")),
+                    "domain server address must not appear as an ip CIDR"
+                );
+            }
+        }
+        // A direct domain rule must carry the server domain.
+        let has_domain_rule = rules.iter().any(|r| {
+            r.get("outboundTag").and_then(|t| t.as_str()) == Some("direct")
+                && r.get("domain")
+                    .and_then(|d| d.as_array())
+                    .map(|d| d.iter().any(|v| v.as_str() == Some("rustvpn.fun")))
+                    .unwrap_or(false)
+        });
+        assert!(
+            has_domain_rule,
+            "server domain must be routed direct via a domain rule"
         );
     }
 
