@@ -218,10 +218,13 @@ jobs:
 
           git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
           cd /tmp/AndroidLibXrayLite
+          # -checklinkname=0: AndroidLibXrayLite (via xray-core's anet dep) uses a
+          # go:linkname to net.zoneCache that Go >= 1.23's linker rejects by default
+          # ("invalid reference to net.zoneCache"). Disable the check so the AAR links.
           gomobile bind -v \
             -target=android/arm64 \
             -androidapi 21 \
-            -ldflags='-s -w' \
+            -ldflags='-s -w -checklinkname=0' \
             -o /tmp/libv2ray.aar \
             ./
           cp /tmp/libv2ray.aar "${GITHUB_WORKSPACE}/${LIBS_DIR}/libv2ray.aar"
