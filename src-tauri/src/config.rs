@@ -62,6 +62,7 @@ pub fn generate_client_config(
     });
 
     let is_xhttp = server.network == "xhttp";
+    let is_tls = server.security == "tls";
 
     // TCP keepalive so xray detects a server connection that has silently gone
     // dead (e.g. after an ISP daily session/IP reset) instead of hanging on a
@@ -80,16 +81,49 @@ pub fn generate_client_config(
         } else {
             server.xhttp_path.trim()
         };
-        (
-            json!({
-                "network": "xhttp",
-                "security": "reality",
-                "realitySettings": reality_settings,
-                "xhttpSettings": { "path": path, "mode": "auto" },
-                "sockopt": sockopt
-            }),
-            "",
-        )
+        let mode = if server.xhttp_mode.trim().is_empty() {
+            "auto"
+        } else {
+            server.xhttp_mode.trim()
+        };
+        if is_tls {
+            // xHTTP + real TLS for CDN fronting (Cloudflare): the DPI sees the
+            // CDN's whitelisted IPs instead of the throttled origin. REALITY is
+            // impossible here because the CDN terminates TLS. serverName / Host
+            // is the CDN domain (stored in reality.server_name); alpn h2 matches
+            // Cloudflare's HTTP/2 edge.
+            let cdn_host = server.reality.server_name.as_str();
+            let tls_settings = json!({
+                "serverName": cdn_host,
+                "alpn": ["h2"],
+                "fingerprint": server.reality.fingerprint
+            });
+            (
+                json!({
+                    "network": "xhttp",
+                    "security": "tls",
+                    "tlsSettings": tls_settings,
+                    "xhttpSettings": {
+                        "path": path,
+                        "mode": mode,
+                        "host": cdn_host
+                    },
+                    "sockopt": sockopt
+                }),
+                "",
+            )
+        } else {
+            (
+                json!({
+                    "network": "xhttp",
+                    "security": "reality",
+                    "realitySettings": reality_settings,
+                    "xhttpSettings": { "path": path, "mode": mode },
+                    "sockopt": sockopt
+                }),
+                "",
+            )
+        }
     } else {
         (
             json!({
@@ -356,6 +390,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
 
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
@@ -494,6 +530,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let parsed: Result<Value, _> = serde_json::from_str(&config_str);
@@ -515,6 +553,8 @@ mod tests {
             reality: RealitySettings::default(),
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -545,6 +585,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -759,6 +801,8 @@ mod tests {
             reality: RealitySettings::default(),
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -815,6 +859,8 @@ mod tests {
             },
             network: "xhttp".to_string(),
             xhttp_path: "/xhttp".to_string(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
         let config: Value = serde_json::from_str(&config_str).unwrap();
@@ -836,6 +882,8 @@ mod tests {
         let server = ServerConfig {
             network: "xhttp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
             ..ServerConfig::default()
         };
         let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
@@ -854,5 +902,60 @@ mod tests {
         let sockopt = &config["outbounds"][0]["streamSettings"]["sockopt"];
         assert_eq!(sockopt["tcpKeepAliveIdle"], 30);
         assert_eq!(sockopt["tcpKeepAliveInterval"], 15);
+    }
+
+    #[test]
+    fn test_config_xhttp_tls_cdn() {
+        // VLESS + xHTTP + real TLS for Cloudflare CDN fronting. The stream must
+        // use security "tls" (NOT reality, which can't survive a CDN), carry
+        // tlsSettings with serverName=CDN domain + alpn h2, set the xhttp Host
+        // header to the same domain, and pass the chosen mode through.
+        let server = ServerConfig {
+            network: "xhttp".to_string(),
+            security: "tls".to_string(),
+            xhttp_path: "/assets".to_string(),
+            xhttp_mode: "stream-one".to_string(),
+            reality: RealitySettings {
+                server_name: "cdn.example.com".to_string(),
+                fingerprint: "chrome".to_string(),
+                ..RealitySettings::default()
+            },
+            ..ServerConfig::default()
+        };
+        let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&config).unwrap();
+        let stream = &parsed["outbounds"][0]["streamSettings"];
+        assert_eq!(stream["network"], "xhttp");
+        assert_eq!(stream["security"], "tls");
+        // No REALITY block when fronting through a CDN.
+        assert!(stream.get("realitySettings").is_none());
+        let tls = &stream["tlsSettings"];
+        assert_eq!(tls["serverName"], "cdn.example.com");
+        assert_eq!(tls["alpn"][0], "h2");
+        assert_eq!(tls["fingerprint"], "chrome");
+        let xhttp = &stream["xhttpSettings"];
+        assert_eq!(xhttp["path"], "/assets");
+        assert_eq!(xhttp["mode"], "stream-one");
+        assert_eq!(xhttp["host"], "cdn.example.com");
+        // Flow stays empty for xhttp.
+        assert_eq!(
+            parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
+            ""
+        );
+    }
+
+    #[test]
+    fn test_config_xhttp_mode_passthrough() {
+        // A non-default xhttp mode on a REALITY xhttp server must reach the
+        // generated config (so e.g. packet-up can be selected without TLS).
+        let server = ServerConfig {
+            network: "xhttp".to_string(),
+            xhttp_mode: "packet-up".to_string(),
+            ..ServerConfig::default()
+        };
+        let config = generate_client_config(&server, 1080, &[], &[], None, &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&config).unwrap();
+        let xhttp = &parsed["outbounds"][0]["streamSettings"]["xhttpSettings"];
+        assert_eq!(xhttp["mode"], "packet-up");
     }
 }

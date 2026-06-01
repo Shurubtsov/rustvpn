@@ -63,6 +63,9 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
     let mut short_id = String::new();
     let mut network = "tcp".to_string();
     let mut xhttp_path = String::new();
+    let mut security = "reality".to_string();
+    let mut xhttp_mode = String::new();
+    let mut host = String::new();
 
     for param in query.split('&') {
         if param.is_empty() {
@@ -83,7 +86,18 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
                     };
                 }
                 "path" => xhttp_path = url_decode(value),
-                _ => {} // ignore unknown params (encryption, security, etc.)
+                "security" => {
+                    // Only "tls" enables CDN mode; anything else (reality, none,
+                    // unspecified) keeps the REALITY default.
+                    security = if url_decode(value).to_lowercase() == "tls" {
+                        "tls".to_string()
+                    } else {
+                        "reality".to_string()
+                    };
+                }
+                "mode" => xhttp_mode = url_decode(value),
+                "host" => host = url_decode(value),
+                _ => {} // ignore unknown params (encryption, etc.)
             }
         }
     }
@@ -93,6 +107,18 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
     if network == "xhttp" {
         flow = String::new();
     }
+
+    // For TLS/CDN, sni and host are both the CDN domain; store it as server_name.
+    // Fall back to the Host header if only `host` was supplied.
+    if sni.is_empty() && !host.is_empty() {
+        sni = host;
+    }
+
+    let xhttp_mode = if xhttp_mode.trim().is_empty() {
+        "auto".to_string()
+    } else {
+        xhttp_mode
+    };
 
     Ok(ServerConfig {
         id: uuid::Uuid::new_v4().to_string(),
@@ -109,6 +135,8 @@ pub fn parse_vless_uri(uri: &str) -> Result<ServerConfig, AppError> {
         },
         network,
         xhttp_path,
+        security,
+        xhttp_mode,
     })
 }
 
@@ -120,8 +148,37 @@ pub fn to_vless_uri(server: &ServerConfig) -> String {
         } else {
             server.xhttp_path.trim()
         };
+        let mode = if server.xhttp_mode.trim().is_empty() {
+            "auto"
+        } else {
+            server.xhttp_mode.trim()
+        };
+        if server.security == "tls" {
+            // xHTTP + real TLS for CDN fronting. No REALITY keypair; sni and the
+            // HTTP Host header are both the CDN domain (server_name). mode is
+            // always emitted so the (usually stream-one) profile round-trips.
+            return format!(
+                "vless://{}@{}:{}?encryption=none&type=xhttp&security=tls&host={}&path={}&sni={}&fp={}&mode={}#{}",
+                server.uuid,
+                server.address,
+                server.port,
+                url_encode(&server.reality.server_name),
+                url_encode(path),
+                url_encode(&server.reality.server_name),
+                url_encode(&server.reality.fingerprint),
+                url_encode(mode),
+                name,
+            );
+        }
+        // REALITY xHTTP. Append mode only when it differs from the default so
+        // existing share links stay byte-for-byte stable.
+        let mode_param = if mode == "auto" {
+            String::new()
+        } else {
+            format!("&mode={}", url_encode(mode))
+        };
         format!(
-            "vless://{}@{}:{}?encryption=none&type=xhttp&path={}&security=reality&sni={}&fp={}&pbk={}&sid={}#{}",
+            "vless://{}@{}:{}?encryption=none&type=xhttp&path={}&security=reality&sni={}&fp={}&pbk={}&sid={}{}#{}",
             server.uuid,
             server.address,
             server.port,
@@ -130,6 +187,7 @@ pub fn to_vless_uri(server: &ServerConfig) -> String {
             url_encode(&server.reality.fingerprint),
             url_encode(&server.reality.public_key),
             url_encode(&server.reality.short_id),
+            mode_param,
             name,
         )
     } else {
@@ -228,6 +286,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         }
     }
 
@@ -395,6 +455,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
 
         let uri = to_vless_uri(&server);
@@ -473,6 +535,8 @@ mod tests {
             },
             network: "xhttp".to_string(),
             xhttp_path: "/xhttp".to_string(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         };
         let uri = to_vless_uri(&server);
         assert!(uri.contains("type=xhttp"));

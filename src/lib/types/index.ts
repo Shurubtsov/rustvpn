@@ -17,6 +17,15 @@ export interface ServerConfig {
 	network: string;
 	/** XHTTP request path; only used when network === "xhttp". */
 	xhttp_path: string;
+	/**
+	 * Transport security: "reality" (default) or "tls". TLS is required for CDN
+	 * fronting (Cloudflare terminates TLS, so REALITY can't be used through a
+	 * CDN). When "tls", reality.server_name is the CDN domain (SNI + Host) and
+	 * reality.fingerprint is the uTLS fingerprint; public_key/short_id are unused.
+	 */
+	security: string;
+	/** XHTTP mode: "auto" (default), "stream-one", "stream-up", "packet-up". */
+	xhttp_mode: string;
 }
 
 export type ConnectionStatus =

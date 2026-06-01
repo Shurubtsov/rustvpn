@@ -309,6 +309,8 @@ mod tests {
             },
             network: "tcp".to_string(),
             xhttp_path: String::new(),
+            security: "reality".to_string(),
+            xhttp_mode: "auto".to_string(),
         }
     }
 
