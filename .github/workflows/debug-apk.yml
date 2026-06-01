@@ -1,0 +1,145 @@
+name: Debug APK
+
+# Builds a DEBUG Android APK (debug_assertions on -> tauri-plugin-log active ->
+# [DIAG]/[FE] traces reach logcat; WebView is also remote-debuggable). Signed
+# with the stable release keystore so it installs in-place over a release build
+# WITHOUT wiping saved servers. Uploaded as a workflow artifact (no GitHub
+# Release). Diagnostic builds only — run from the diag branch.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-android-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Initialize Tauri Android
+        run: pnpm tauri android init
+
+      - name: Build AndroidLibXrayLite AAR
+        shell: bash
+        run: |
+          LIBS_DIR="src-tauri/tauri-plugin-vpn/android/libs"
+          mkdir -p "$LIBS_DIR"
+          git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/AndroidLibXrayLite
+          cd /tmp/AndroidLibXrayLite
+          # -checklinkname=0: see release.yml (anet -> net.zoneCache go:linkname).
+          gomobile bind -v \
+            -target=android/arm64 \
+            -androidapi 21 \
+            -ldflags='-s -w -checklinkname=0' \
+            -o /tmp/libv2ray.aar \
+            ./
+          cp /tmp/libv2ray.aar "${GITHUB_WORKSPACE}/${LIBS_DIR}/libv2ray.aar"
+          cd "${GITHUB_WORKSPACE}"
+
+      - name: Build hev-socks5-tunnel from source
+        shell: bash
+        env:
+          HEV_VERSION: "2.14.4"
+        run: |
+          JNILIBS_DIR="src-tauri/tauri-plugin-vpn/android/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNILIBS_DIR"
+          export NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"
+          mkdir -p /tmp/hev-build
+          git clone --depth 1 --branch "${HEV_VERSION}" --recursive \
+            https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev-build/jni
+          cd /tmp/hev-build
+          "${NDK_HOME}/ndk-build" APP_ABI=arm64-v8a -j$(nproc)
+          HEV_SO="/tmp/hev-build/libs/arm64-v8a/libhev-socks5-tunnel.so"
+          test -f "$HEV_SO" || { echo "ndk-build failed"; exit 1; }
+          cp "$HEV_SO" "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          chmod +x "${GITHUB_WORKSPACE}/${JNILIBS_DIR}/libhev.so"
+          cd "${GITHUB_WORKSPACE}"
+
+      - name: Configure native library extraction
+        shell: bash
+        run: |
+          APP_GRADLE="src-tauri/gen/android/app/build.gradle.kts"
+          if [ -f "$APP_GRADLE" ]; then
+            sed -i '/^android {/a\    packaging { jniLibs { useLegacyPackaging = true } }' "$APP_GRADLE"
+          fi
+
+      - name: Decode signing keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
+          test -s ${{ github.workspace }}/release.keystore || { echo "Keystore decode failed"; exit 1; }
+
+      - name: Build Android APK (debug)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: pnpm tauri android build --debug --apk
+
+      - name: Sign APK with release keystore
+        shell: bash
+        run: |
+          UNSIGNED=$(find src-tauri/gen/android -name "*.apk" | head -1)
+          test -n "$UNSIGNED" || { echo "No APK found!"; exit 1; }
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          "${BUILD_TOOLS}zipalign" -f -v -p 4 "$UNSIGNED" /tmp/aligned.apk
+          "${BUILD_TOOLS}apksigner" sign \
+            --ks ${{ github.workspace }}/release.keystore \
+            --ks-key-alias rustvpn \
+            --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+            --key-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+            --out /tmp/signed.apk \
+            /tmp/aligned.apk
+          "${BUILD_TOOLS}apksigner" verify /tmp/signed.apk
+          mkdir -p out
+          cp /tmp/signed.apk out/RustVPN-debug-arm64.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustvpn-debug-apk
+          path: out/*.apk
+          if-no-files-found: error

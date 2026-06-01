@@ -128,6 +128,7 @@ pub fn run() {
             commands::get_socks_port,
             commands::validate_config,
             commands::get_servers,
+            commands::frontend_log,
             commands::add_server,
             commands::update_server,
             commands::delete_server,

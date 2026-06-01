@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings, ConnectionInfo, DetectedVpn, LogEntry, ServerConfig, SpeedStats } from '$lib/types';
 
+/** Debug trace → native log (logcat on Android). Best-effort; never throws. */
+export function frontendLog(msg: string): void {
+	invoke('frontend_log', { msg }).catch(() => {});
+}
+
 export async function connect(config: ServerConfig): Promise<void> {
 	await invoke<void>('connect', { serverConfig: config });
 }

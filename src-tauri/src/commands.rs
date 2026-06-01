@@ -81,7 +81,20 @@ pub fn get_socks_port(manager: State<'_, XrayManager>) -> Result<u16, String> {
 
 #[tauri::command]
 pub fn get_servers<R: Runtime>(app: AppHandle<R>) -> Result<Vec<ServerConfig>, String> {
-    storage::load_servers(&app).map_err(|e| e.to_string())
+    let r = storage::load_servers(&app).map_err(|e| e.to_string());
+    match &r {
+        Ok(v) => log::info!("[DIAG] get_servers -> Ok({} servers)", v.len()),
+        Err(e) => log::info!("[DIAG] get_servers -> Err({e})"),
+    }
+    r
+}
+
+/// Debug-only: let the frontend write a line to the native log (logcat on
+/// Android) so the WebView's lifecycle/data flow is traceable without a
+/// remote-debuggable WebView.
+#[tauri::command]
+pub fn frontend_log(msg: String) {
+    log::info!("[FE] {msg}");
 }
 
 #[tauri::command]

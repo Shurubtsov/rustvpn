@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { cn } from '$lib/utils';
 	import { serversStore } from '$lib/stores/servers.svelte';
+	import { frontendLog } from '$lib/api/tauri';
+	import { onMount } from 'svelte';
 	import type { ServerConfig } from '$lib/types';
 
 	interface Props {
@@ -11,6 +13,11 @@
 	const { onEdit, onAdd }: Props = $props();
 
 	const store = serversStore;
+
+	onMount(() => frontendLog(`ServerList mounted, store has ${store.servers.length}`));
+	// Re-runs whenever the reactive server count changes — tells us whether the
+	// each-block is being fed data even when the screen looks empty.
+	$effect(() => frontendLog(`ServerList render: ${store.servers.length} rows`));
 </script>
 
 <div class="w-full flex flex-col gap-1">

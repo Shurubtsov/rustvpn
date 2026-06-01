@@ -12,7 +12,7 @@
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import BackgroundModeModal from '$lib/components/BackgroundModeModal.svelte';
 	import { isMobile, isDesktop } from '$lib/utils/platform';
-	import { detectVpnInterfaces, isBatteryOptimizationIgnored } from '$lib/api/tauri';
+	import { detectVpnInterfaces, isBatteryOptimizationIgnored, frontendLog } from '$lib/api/tauri';
 	import type { ServerConfig, DetectedVpn } from '$lib/types';
 
 	const BG_MODAL_DISMISS_KEY = 'rustvpn.bgModeModalDismissed';
@@ -261,6 +261,7 @@
 	// compositor must paint new nodes — a plain data update doesn't guarantee
 	// that here), force a repaint, and resync connection state.
 	function handleVisibilityChange() {
+		frontendLog(`handleVisibilityChange visibility=${document.visibilityState}`);
 		if (document.visibilityState !== 'visible') return;
 		// The list goes empty on Android reopen because ColorOS destroyed the
 		// Activity and reloaded the WebView while backgrounded, and the first
@@ -283,6 +284,7 @@
 	}
 
 	onMount(async () => {
+		frontendLog('+page onMount start');
 		// loadWithRetry, not load(): on a cold WebView reload after an Android
 		// resume the Tauri backend may not be ready for the first get_servers
 		// call (it rejects or returns []). A plain single load() is what left the

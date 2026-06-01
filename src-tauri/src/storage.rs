@@ -18,6 +18,11 @@ fn servers_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, AppError> {
 
 pub fn load_servers<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<ServerConfig>, AppError> {
     let path = servers_path(app)?;
+    log::info!(
+        "[DIAG] load_servers path={} exists={}",
+        path.display(),
+        path.exists()
+    );
     if !path.exists() {
         return Ok(Vec::new());
     }

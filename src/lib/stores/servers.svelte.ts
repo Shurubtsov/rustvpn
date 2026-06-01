@@ -55,13 +55,17 @@ function createServersStore() {
 	 * attempts quickly and shows the empty/add-server UI, which is fine.
 	 */
 	async function loadWithRetry(attempts = 8, delayMs = 250): Promise<void> {
+		api.frontendLog(`loadWithRetry start (have ${servers.length})`);
 		for (let i = 0; i < attempts; i++) {
 			try {
+				const t0 = Date.now();
 				await load();
+				api.frontendLog(`loadWithRetry attempt ${i}: ok in ${Date.now() - t0}ms, have ${servers.length}`);
 				// Got real data — done. (If we already hold servers from a warm
 				// store, servers.length stays > 0 and we stop immediately.)
 				if (servers.length > 0) return;
-			} catch {
+			} catch (e) {
+				api.frontendLog(`loadWithRetry attempt ${i}: threw ${e}`);
 				// Backend not ready yet — fall through to the backoff and retry.
 			}
 			// Last attempt: don't sleep needlessly.
@@ -69,6 +73,7 @@ function createServersStore() {
 				await new Promise((r) => setTimeout(r, delayMs));
 			}
 		}
+		api.frontendLog(`loadWithRetry exhausted, have ${servers.length}`);
 	}
 
 	async function addServer(server: ServerConfig): Promise<ServerConfig> {
