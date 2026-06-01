@@ -54,19 +54,34 @@ function createServersStore() {
 	 * have servers. A genuinely empty install (first run) simply exhausts the
 	 * attempts quickly and shows the empty/add-server UI, which is fine.
 	 */
-	async function loadWithRetry(attempts = 8, delayMs = 250): Promise<void> {
+	async function loadWithRetry(attempts = 10, delayMs = 250): Promise<void> {
 		api.frontendLog(`loadWithRetry start (have ${servers.length})`);
+		// Per-attempt timeout is the crux of the fix. On an Android WebView reload
+		// after resume, the FIRST get_servers invoke is executed by the Rust
+		// backend but its response is dropped before it reaches the JS bridge — so
+		// `await load()` hangs forever (the promise neither resolves nor rejects).
+		// A retry-on-empty/reject loop can't recover from that. Racing each attempt
+		// against a timeout lets us abandon the hung invoke and issue a FRESH one
+		// (which round-trips fine once the bridge is ready — the same thing the
+		// /logs navigation does manually).
+		const ATTEMPT_TIMEOUT = 1200;
 		for (let i = 0; i < attempts; i++) {
 			try {
 				const t0 = Date.now();
-				await load();
+				await Promise.race([
+					load(),
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error('get_servers timed out')), ATTEMPT_TIMEOUT)
+					)
+				]);
 				api.frontendLog(`loadWithRetry attempt ${i}: ok in ${Date.now() - t0}ms, have ${servers.length}`);
 				// Got real data — done. (If we already hold servers from a warm
 				// store, servers.length stays > 0 and we stop immediately.)
 				if (servers.length > 0) return;
 			} catch (e) {
-				api.frontendLog(`loadWithRetry attempt ${i}: threw ${e}`);
-				// Backend not ready yet — fall through to the backoff and retry.
+				api.frontendLog(`loadWithRetry attempt ${i}: ${e}`);
+				// Hung/dropped IPC or backend error — fall through, back off, and
+				// retry with a brand-new invoke.
 			}
 			// Last attempt: don't sleep needlessly.
 			if (i < attempts - 1) {
