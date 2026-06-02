@@ -324,6 +324,18 @@ pub fn generate_client_config(
         "outboundTag": "dns-out"
     }));
 
+    // Block QUIC (UDP/443). YouTube/Chrome/Telegram default to QUIC, but REALITY's
+    // XTLS-Vision flow rejects UDP/443 ("XTLS rejected UDP/443 traffic") and proxied
+    // UDP is unreliable anyway — so QUIC connections stall instead of failing fast,
+    // and video/voice become unusable even though TCP is healthy. Blackholing UDP/443
+    // makes apps fall back to TCP/HTTPS immediately, which tunnels fine.
+    rules.push(json!({
+        "type": "field",
+        "network": "udp",
+        "port": 443,
+        "outboundTag": "block"
+    }));
+
     // Bypass domains → direct (skip VPN tunnel)
     if !bypass_domains.is_empty() {
         let domains: Vec<Value> = bypass_domains
@@ -583,7 +595,7 @@ mod tests {
 
         assert_eq!(config["routing"]["domainStrategy"], "IPIfNonMatch");
         let rules = config["routing"]["rules"].as_array().unwrap();
-        assert_eq!(rules.len(), 3);
+        assert_eq!(rules.len(), 4);
         // First rule captures app DNS (port 53) into the dns resolver.
         assert_eq!(rules[0]["outboundTag"], "dns-out");
         assert_eq!(rules[0]["port"], 53);
@@ -591,13 +603,17 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&Value::String("socks-in".to_string())));
-        assert_eq!(rules[1]["outboundTag"], "direct");
-        assert!(rules[1]["domain"]
+        // Second rule blocks QUIC (UDP/443) so apps fall back to TCP.
+        assert_eq!(rules[1]["outboundTag"], "block");
+        assert_eq!(rules[1]["network"], "udp");
+        assert_eq!(rules[1]["port"], 443);
+        assert_eq!(rules[2]["outboundTag"], "direct");
+        assert!(rules[2]["domain"]
             .as_array()
             .unwrap()
             .contains(&Value::String("localhost".to_string())));
-        assert_eq!(rules[2]["outboundTag"], "direct");
-        let ips = rules[2]["ip"].as_array().unwrap();
+        assert_eq!(rules[3]["outboundTag"], "direct");
+        let ips = rules[3]["ip"].as_array().unwrap();
         assert!(ips.contains(&Value::String("127.0.0.0/8".to_string())));
         assert!(ips.contains(&Value::String("10.0.0.0/8".to_string())));
         assert!(ips.contains(&Value::String("192.168.0.0/16".to_string())));
