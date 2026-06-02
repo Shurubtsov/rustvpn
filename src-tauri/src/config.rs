@@ -45,11 +45,21 @@ pub fn generate_client_config(
         } else {
             Vec::new()
         };
-        servers.push(json!("1.1.1.1"));
-        servers.push(json!("8.8.8.8"));
+        // Public resolvers over TCP: apps' DNS is redirected into xray's resolver
+        // (see the port-53 routing rule below) and the upstream query rides the
+        // tunnel — proxied UDP is unreliable (XUDP "closed pipe" on Android), so TCP.
+        servers.push(json!("tcp://1.1.1.1"));
+        servers.push(json!("tcp://8.8.8.8"));
         servers
     } else {
-        vec![json!("localhost"), json!("1.1.1.1"), json!("8.8.8.8")]
+        // localhost first bootstraps the proxy server's own domain (e.g. CDN host)
+        // via the direct system resolver; tcp:// fallbacks resolve everything else
+        // through the tunnel, uncensored and immune to carrier DNS poisoning.
+        vec![
+            json!("localhost"),
+            json!("tcp://1.1.1.1"),
+            json!("tcp://8.8.8.8"),
+        ]
     };
 
     // REALITY settings are identical across transports; only the stream wrapper differs.
@@ -252,6 +262,10 @@ pub fn generate_client_config(
             {
                 "tag": "block",
                 "protocol": "blackhole"
+            },
+            {
+                "tag": "dns-out",
+                "protocol": "dns"
             }
         ],
         "routing": {
@@ -295,6 +309,20 @@ pub fn generate_client_config(
         .and_then(|r| r.get_mut("rules"))
         .and_then(|r| r.as_array_mut())
         .ok_or_else(|| AppError::Config("Base config missing routing.rules array".to_string()))?;
+
+    // Apps send DNS as raw UDP to :53; proxying that UDP through the tunnel fails
+    // (XUDP "closed pipe", esp. on Android), so nothing resolves and the tunnel looks
+    // "connected but dead". Redirect all app-origin port-53 traffic into xray's
+    // built-in DNS resolver (dns-out), which re-issues the query over TCP per the
+    // `dns` server list — reliable through the tunnel. Scoped to the app inbounds so
+    // the resolver's own upstream queries (tagged xray.system) aren't re-caught into
+    // a loop. Must precede the IP/domain rules so DNS is always captured first.
+    rules.push(json!({
+        "type": "field",
+        "inboundTag": ["socks-in", "http-in"],
+        "port": 53,
+        "outboundTag": "dns-out"
+    }));
 
     // Bypass domains → direct (skip VPN tunnel)
     if !bypass_domains.is_empty() {
@@ -487,11 +515,11 @@ mod tests {
         assert_eq!(reality["serverName"], "www.microsoft.com");
         assert_eq!(reality["fingerprint"], "chrome");
 
-        // Verify DNS (proxy-only mode includes external servers)
+        // Verify DNS (proxy-only mode includes external servers, public over TCP)
         let dns = config["dns"]["servers"].as_array().unwrap();
         assert_eq!(dns[0], "localhost");
-        assert_eq!(dns[1], "1.1.1.1");
-        assert_eq!(dns[2], "8.8.8.8");
+        assert_eq!(dns[1], "tcp://1.1.1.1");
+        assert_eq!(dns[2], "tcp://8.8.8.8");
     }
 
     #[test]
@@ -510,7 +538,7 @@ mod tests {
         let config: Value = serde_json::from_str(&config_str).unwrap();
 
         let outbounds = config["outbounds"].as_array().unwrap();
-        assert_eq!(outbounds.len(), 3);
+        assert_eq!(outbounds.len(), 4);
 
         assert_eq!(outbounds[0]["tag"], "proxy");
         assert_eq!(outbounds[0]["protocol"], "vless");
@@ -520,6 +548,9 @@ mod tests {
 
         assert_eq!(outbounds[2]["tag"], "block");
         assert_eq!(outbounds[2]["protocol"], "blackhole");
+
+        assert_eq!(outbounds[3]["tag"], "dns-out");
+        assert_eq!(outbounds[3]["protocol"], "dns");
     }
 
     #[test]
@@ -552,14 +583,21 @@ mod tests {
 
         assert_eq!(config["routing"]["domainStrategy"], "IPIfNonMatch");
         let rules = config["routing"]["rules"].as_array().unwrap();
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0]["outboundTag"], "direct");
-        assert!(rules[0]["domain"]
+        assert_eq!(rules.len(), 3);
+        // First rule captures app DNS (port 53) into the dns resolver.
+        assert_eq!(rules[0]["outboundTag"], "dns-out");
+        assert_eq!(rules[0]["port"], 53);
+        assert!(rules[0]["inboundTag"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String("socks-in".to_string())));
+        assert_eq!(rules[1]["outboundTag"], "direct");
+        assert!(rules[1]["domain"]
             .as_array()
             .unwrap()
             .contains(&Value::String("localhost".to_string())));
-        assert_eq!(rules[1]["outboundTag"], "direct");
-        let ips = rules[1]["ip"].as_array().unwrap();
+        assert_eq!(rules[2]["outboundTag"], "direct");
+        let ips = rules[2]["ip"].as_array().unwrap();
         assert!(ips.contains(&Value::String("127.0.0.0/8".to_string())));
         assert!(ips.contains(&Value::String("10.0.0.0/8".to_string())));
         assert!(ips.contains(&Value::String("192.168.0.0/16".to_string())));
@@ -788,8 +826,8 @@ mod tests {
             2,
             "TUN mode with no VPN DNS must only include 1.1.1.1 and 8.8.8.8"
         );
-        assert_eq!(dns[0], "1.1.1.1");
-        assert_eq!(dns[1], "8.8.8.8");
+        assert_eq!(dns[0], "tcp://1.1.1.1");
+        assert_eq!(dns[1], "tcp://8.8.8.8");
     }
 
     #[test]
@@ -819,8 +857,8 @@ mod tests {
         // expectIPs should match bypass_subnets (VPN-routed ranges)
         assert!(expect_ips.iter().any(|v| v == "10.0.0.0/8"));
         assert!(expect_ips.iter().any(|v| v == "185.62.200.0/22"));
-        assert_eq!(dns[1], "1.1.1.1");
-        assert_eq!(dns[2], "8.8.8.8");
+        assert_eq!(dns[1], "tcp://1.1.1.1");
+        assert_eq!(dns[2], "tcp://8.8.8.8");
     }
 
     #[test]
@@ -850,8 +888,34 @@ mod tests {
 
         let dns = config["dns"]["servers"].as_array().unwrap();
         assert_eq!(dns[0], "localhost");
-        assert_eq!(dns[1], "1.1.1.1");
-        assert_eq!(dns[2], "8.8.8.8");
+        assert_eq!(dns[1], "tcp://1.1.1.1");
+        assert_eq!(dns[2], "tcp://8.8.8.8");
+    }
+
+    #[test]
+    fn test_config_dns_redirect_to_dns_outbound() {
+        // App DNS (UDP :53) must be captured into the dns resolver outbound so it
+        // resolves over TCP through the tunnel instead of failing as proxied UDP.
+        let server = ServerConfig::default();
+        let config_str = generate_client_config(&server, 10808, &[], &[], None, &[]).unwrap();
+        let config: Value = serde_json::from_str(&config_str).unwrap();
+
+        // dns-out outbound exists with protocol "dns".
+        let dns_out = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == "dns-out")
+            .expect("dns-out outbound must exist");
+        assert_eq!(dns_out["protocol"], "dns");
+
+        // First routing rule redirects app-origin port 53 to dns-out.
+        let rule = &config["routing"]["rules"][0];
+        assert_eq!(rule["outboundTag"], "dns-out");
+        assert_eq!(rule["port"], 53);
+        let inbound_tags = rule["inboundTag"].as_array().unwrap();
+        assert!(inbound_tags.contains(&Value::String("socks-in".to_string())));
+        assert!(inbound_tags.contains(&Value::String("http-in".to_string())));
     }
 
     #[test]
